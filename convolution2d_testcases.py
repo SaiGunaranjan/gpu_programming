@@ -51,8 +51,8 @@ print('Total memory on GPU = {0:.2f} MB'.format(GPU_memorySize));
 thrdPerBlockx = 16;
 thrdPerBlocky = 16;
 thrdPerBlock = (thrdPerBlocky,thrdPerBlockx);
-blkPerGridx = int(cp.ceil(outputImage.shape[1])/thrdPerBlockx);
-blkPerGridy = int(cp.ceil(outputImage.shape[0])/thrdPerBlocky);
+blkPerGridx = int(cp.ceil(inputImage_gpu_ext.shape[1]/thrdPerBlockx));
+blkPerGridy = int(cp.ceil(inputImage_gpu_ext.shape[0]/thrdPerBlocky));
 blkPerGrid = (blkPerGridy, blkPerGridx)
 
 

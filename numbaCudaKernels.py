@@ -39,10 +39,13 @@ def conv_2d(inputImageExtnd, pointSpreadFn, outputImage, InputLenX, InputLenY, p
     convSum = cp.float32(0)
     for x in range(-psfOneSideLenX,psfOneSideLenX+1):
         for y in range(-psfOneSideLenY,psfOneSideLenY+1):
-            convSum += inputImageExtnd[thrdIDy+y,thrdIDx+x]*pointSpreadFn[2*psfOneSideLenY-y,2*psfOneSideLenX-x];
+            convSum += inputImageExtnd[thrdIDy+y,thrdIDx+x]*pointSpreadFn[psfOneSideLenY-y,psfOneSideLenX-x];
+            # if (thrdIDx == psfOneSideLenX + InputLenX + psfLenX -2) and (thrdIDy == psfOneSideLenY + InputLenY + psfLenY -2):
+            #     print('x:',x,'y:',y,'imagVal:',inputImageExtnd[thrdIDy+y,thrdIDx+x],'psfval:',pointSpreadFn[2*psfOneSideLenY-y,2*psfOneSideLenX-x])
    
-    
-    outputImage[thrdIDy,thrdIDx] = convSum;
+    # if (thrdIDx == psfOneSideLenX + InputLenX + psfLenX -2) and (thrdIDy == psfOneSideLenY + InputLenY + psfLenY -2):
+    #     print('conSum:',convSum)
+    outputImage[thrdIDy-psfOneSideLenY,thrdIDx-psfOneSideLenX] = convSum;
     
     
     
