@@ -48,4 +48,33 @@ def conv_2d(inputImageExtnd, pointSpreadFn, outputImage, InputLenX, InputLenY, p
     outputImage[thrdIDy-psfOneSideLenY,thrdIDx-psfOneSideLenX] = convSum;
     
     
+
+@cuda.jit('void(float32[:], int32, int32, int32, float32[:], float32, float32[:])')
+def CFAR_CA_GPU(signal_ext, origSignalLen , guardBandLen_1side, validSampLen_1side, scratchPad, noiseMargin, outputBoolVector):
     
+    thrdID = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    
+    
+    if (thrdID < origSignalLen-1) or (thrdID > 2*origSignalLen-2):
+        return;
+            
+    # check for local maxima on the CUT i.e. signal_ext[thrdID]
+    if (signal_ext[thrdID] >= signal_ext[thrdID-1]) and (signal_ext[thrdID] >= signal_ext[thrdID+1]):
+        
+        count = cp.int32(0)
+        for i in range(thrdID-guardBandLen_1side-validSampLen_1side, thrdID-guardBandLen_1side):
+            scratchPad[count] = signal_ext[i];
+            count += 1;
+        for j in range(thrdID+guardBandLen_1side+1, thrdID+guardBandLen_1side+validSampLen_1side+1):
+            scratchPad[count] = signal_ext[j];
+            count += 1
+        avgNoisePower = cp.float32(0)
+        for ele in range(len(scratchPad)):
+            avgNoisePower += scratchPad[ele];
+        avgNoisePower = avgNoisePower/len(scratchPad)
+        
+
+        if (signal_ext[thrdID] > noiseMargin*avgNoisePower):
+            outputBoolVector[thrdID-(origSignalLen-1)] = 1
+        
+        
