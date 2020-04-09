@@ -67,22 +67,22 @@ def CFAR_CA(signal, num_gaurd, num_train, rate_fa):
     signal_shape = len(signal)
     signal_ext = np.hstack((np.flipud(signal[1::]), signal, np.flipud(signal[0:-1])))  # Typically done to handle boundary condition for 1st sample of the Range FFT sample
     #num_gaurd = 5;
-    GuardBandVector = np.zeros(num_gaurd)
+    GuardBandVector = np.zeros(num_gaurd,dtype=np.float32)
     CFAR_Half_Window_Length = num_train + num_gaurd
-    Vector_Ones = np.ones((num_train))
-    CFAR_Window = np.hstack((Vector_Ones,GuardBandVector,np.array([1]),GuardBandVector,Vector_Ones)) 
-    Threshold_Beta = 2*num_train*(rate_fa**(-1/(2*num_train)) -1) # multiplication by a factor of 2  to include valid samples both sides of the CUT
+    Vector_Ones = np.ones((num_train),dtype=np.float32)
+    CFAR_Window = np.hstack((Vector_Ones,GuardBandVector,np.array([1],dtype=np.float32),GuardBandVector,Vector_Ones)) 
+    Threshold_Beta = np.float32(2*num_train*(rate_fa**(-1/(2*num_train)) -1)) # multiplication by a factor of 2  to include valid samples both sides of the CUT
     count = 0
-    Target_BoolVector = np.zeros((signal_shape)).astype('int')
+    Target_BoolVector = np.zeros((signal_shape)).astype('int32')
     for SignalIndex in np.arange(signal_shape-1,2*signal_shape-1):
-      CUT = signal_ext[SignalIndex]
-      if CUT >= np.amax(np.array([signal_ext[SignalIndex+1], signal_ext[SignalIndex-1]])):
-          Temp = CFAR_Window*signal_ext[SignalIndex-CFAR_Half_Window_Length:SignalIndex+CFAR_Half_Window_Length+1]
-          Temp_CUT_removed = np.hstack((Temp[0:CFAR_Half_Window_Length],Temp[CFAR_Half_Window_Length+1::]))
-          noise_power = np.sum(Temp_CUT_removed)/(2*num_train)
-          if (CUT > Threshold_Beta*noise_power):
-            Target_BoolVector[count] = 1
-      count = count + 1
+        CUT = signal_ext[SignalIndex]
+        if CUT >= np.amax(np.array([signal_ext[SignalIndex+1], signal_ext[SignalIndex-1]])):
+            Temp = CFAR_Window*signal_ext[SignalIndex-CFAR_Half_Window_Length:SignalIndex+CFAR_Half_Window_Length+1]
+            Temp_CUT_removed = np.hstack((Temp[0:CFAR_Half_Window_Length],Temp[CFAR_Half_Window_Length+1::]))
+            noise_power = np.sum(Temp_CUT_removed)/(2*num_train)
+            if (CUT > Threshold_Beta*noise_power):
+              Target_BoolVector[count] = 1
+        count = count + 1
 
 
     return Target_BoolVector
