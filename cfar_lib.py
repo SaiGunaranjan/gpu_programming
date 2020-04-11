@@ -30,11 +30,11 @@ def CFAR_OS(signal, num_gaurd, num_train, rate_fa, ord_stat_ind):
     signal_shape = len(signal)
     signal_ext = np.hstack((np.flipud(signal[1::]), signal, np.flipud(signal[0:-1])))  # Typically done to handle boundary condition for 1st sample of the Range FFT sample
     #num_gaurd = 5;
-    GuardBandVector = np.zeros(num_gaurd)
+    GuardBandVector = np.zeros(num_gaurd,dtype=np.float32)
     CFAR_Half_Window_Length = num_train + num_gaurd
-    Vector_Ones = np.ones((num_train))
+    Vector_Ones = np.ones((num_train),dtype=np.float32)
     CFAR_Window = np.hstack((Vector_Ones,GuardBandVector,np.array([1]),GuardBandVector,Vector_Ones)) 
-    Threshold_Beta = 2*num_train*(rate_fa**(-1/(2*num_train)) -1) # multiplication by a factor of 2  to include valid samples both sides of the CUT
+    Threshold_Beta = np.float32(2*num_train*(rate_fa**(-1/(2*num_train)) -1)) # multiplication by a factor of 2  to include valid samples both sides of the CUT
     #ord_stat_ind = 3;
     count = 0
     Target_BoolVector = np.zeros((signal_shape)).astype('int32')
@@ -46,7 +46,7 @@ def CFAR_OS(signal, num_gaurd, num_train, rate_fa, ord_stat_ind):
           Temp_CUT_removed = np.hstack((Temp[0:CFAR_Half_Window_Length],Temp[CFAR_Half_Window_Length+1::]))
           Sorted_Temp_CUT_removed = -1*np.sort(-1*Temp_CUT_removed)
           if (CUT > Threshold_Beta*Sorted_Temp_CUT_removed[ord_stat_ind-1]):
-            Target_BoolVector[count] = 1
+              Target_BoolVector[count] = 1
       count = count + 1
 
 
