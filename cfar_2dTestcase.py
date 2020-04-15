@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cfar_lib
 import cupy as cp
-from numbaCudaKernels import CFAR_CA_2D_cross_GPU
+from numbaCudaKernels import CFAR_CA_2D_cross_GPU, CFAR_OS_2D_cross_GPU
 from time import time
 
 
@@ -55,7 +55,7 @@ guardband_len_y = np.int32(1)
 valid_samp_len_x = np.int32(20)
 valid_samp_len_y = np.int32(20)
 false_alarm_rate = 1e-5#1e-4
-OrderedStatisticIndex = 3 # 
+OrderedStatisticIndex = np.int32(3) # 
 
 print('True range bins:',range_bins_ind)
 print('True Doppler bins:', doppler_bins_ind,'\n')
@@ -128,13 +128,22 @@ t6 = time()
 
 print('CFAR CA cross GPU det range bins:', det_indices_caCross_gpu[0])
 print('CFAR CA cross GPU det doppler bins:', det_indices_caCross_gpu[1],'\n')
-  
+
+outPutBoolArray_OScross = cp.zeros((signal_mag.shape[0], signal_mag.shape[1]),dtype=cp.int32)
+CFAR_OS_2D_cross_GPU[blksPerGrid,thrdsPerBlk](signalExtend, origSigShapeX, origSigShapeY, guardband_len_x, guardband_len_y, valid_samp_len_x, valid_samp_len_y,  scratchPad, noiseMargin, OrderedStatisticIndex, outPutBoolArray_OScross)
+outPutBoolArray_OScross = cp.asnumpy(outPutBoolArray_OScross)
+det_indices_osCross_gpu = np.where(outPutBoolArray_OScross>0)
+t7 = time()
+
+print('CFAR OS cross GPU det range bins:', det_indices_osCross_gpu[0])
+print('CFAR OS cross GPU det doppler bins:', det_indices_osCross_gpu[1],'\n')  
     
 ## Timings
 print('CFAR CA cross CPU compute time = {0:.0f} ms'.format((t5-t4)*1000))
 print('CFAR CA cross GPU compute time = {0:.0f} ms'.format((t6-t5)*1000))
 
-
+print('CFAR OS cross CPU compute time = {0:.0f} ms'.format((t3-t2)*1000))
+print('CFAR OS cross GPU compute time = {0:.0f} ms'.format((t7-t6)*1000))
 
 plt.figure(1,figsize=(20,10))
 
@@ -150,6 +159,7 @@ plt.subplot(2,2,2)
 plt.title('CFAR OS 2D Cross')
 plt.imshow(10*np.log10(signal_mag),aspect='auto')
 plt.scatter(det_indices_osCross[1],det_indices_osCross[0],c='r',marker='*',s=20)
+plt.scatter(det_indices_osCross_gpu[1],det_indices_osCross_gpu[0],c='k',marker='D',s=30,alpha=0.3,label='GPU')
 plt.ylabel('Range Index')
 plt.xlabel('Doppler Index')
 
@@ -165,11 +175,11 @@ plt.xlabel('Doppler Index')
 plt.subplot(2,2,4)
 plt.title('CFAR CA 2D cross')
 plt.imshow(10*np.log10(signal_mag),aspect='auto');
-plt.colorbar()
+# plt.colorbar()
 plt.scatter(det_indices_caCross[1],det_indices_caCross[0],c='r',marker='*',s=20,label='CPU')
 plt.scatter(det_indices_caCross_gpu[1],det_indices_caCross_gpu[0],c='k',marker='D',s=30,alpha=0.3,label='GPU')
 plt.ylabel('Range Index')
 plt.xlabel('Doppler Index');
-# plt.legend()
+plt.legend()
 
 

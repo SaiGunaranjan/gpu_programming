@@ -130,8 +130,7 @@ def CFAR_CA_2D_cross_GPU(signal_ext, origSignalLenX, origSignalLenY, guardBandLe
     if (thrdIDx < guardBandLen_1sideX + validSampLen_1sideX) or (thrdIDx > origSignalLenX + guardBandLen_1sideX + validSampLen_1sideX - 1) or (thrdIDy < guardBandLen_1sideY + validSampLen_1sideY) or (thrdIDy > origSignalLenY+ guardBandLen_1sideY + validSampLen_1sideY - 1):
         return;
         
-    if thrdIDy == 93 and thrdIDx == 56:
-        print('SignalVal =',signal_ext[thrdIDy,thrdIDx])
+
     
     # check for local maxima on the CUT i.e. signal_ext[thrdID]
     if (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy,thrdIDx-1]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy,thrdIDx+1]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy-1,thrdIDx]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy+1,thrdIDx]):
@@ -139,9 +138,6 @@ def CFAR_CA_2D_cross_GPU(signal_ext, origSignalLenX, origSignalLenY, guardBandLe
         for i in range(thrdIDx-guardBandLen_1sideX-validSampLen_1sideX, thrdIDx-guardBandLen_1sideX):
             scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
                         thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[thrdIDy,i]
-            if thrdIDy == 93 and thrdIDx == 56:
-                print('LeftSamples[',i,']=',signal_ext[thrdIDy,i])
-            
             count += 1;
         
         for j in range(thrdIDx+guardBandLen_1sideX+1, thrdIDx+guardBandLen_1sideX+validSampLen_1sideX+1):
@@ -172,3 +168,63 @@ def CFAR_CA_2D_cross_GPU(signal_ext, origSignalLenX, origSignalLenY, guardBandLe
                 
         if (signal_ext[thrdIDy,thrdIDx] > noiseMargin*avgNoisePower):
             outputBoolVector[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX)] = 1
+
+
+
+@cuda.jit('void(float32[:,:], int32, int32, int32, int32, int32, int32, float32[:,:,:], float32, int32, int32[:,:])')
+def CFAR_OS_2D_cross_GPU(signal_ext, origSignalLenX, origSignalLenY, guardBandLen_1sideX, guardBandLen_1sideY, validSampLen_1sideX, validSampLen_1sideY,  scratchPad, noiseMargin, ordStat, outputBoolVector):
+
+    
+    thrdIDx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    thrdIDy = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    
+    
+    if (thrdIDx < guardBandLen_1sideX + validSampLen_1sideX) or (thrdIDx > origSignalLenX + guardBandLen_1sideX + validSampLen_1sideX - 1) or (thrdIDy < guardBandLen_1sideY + validSampLen_1sideY) or (thrdIDy > origSignalLenY+ guardBandLen_1sideY + validSampLen_1sideY - 1):
+        return;
+        
+    
+    # check for local maxima on the CUT i.e. signal_ext[thrdID]
+    if (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy,thrdIDx-1]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy,thrdIDx+1]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy-1,thrdIDx]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy+1,thrdIDx]):
+        count = cp.int32(0)
+        for i in range(thrdIDx-guardBandLen_1sideX-validSampLen_1sideX, thrdIDx-guardBandLen_1sideX):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[thrdIDy,i]
+            count += 1;
+        
+        for j in range(thrdIDx+guardBandLen_1sideX+1, thrdIDx+guardBandLen_1sideX+validSampLen_1sideX+1):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[thrdIDy,j];
+            
+            count += 1
+            
+        for k in range(thrdIDy-guardBandLen_1sideY-validSampLen_1sideY, thrdIDy-guardBandLen_1sideY):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[k,thrdIDx]
+            
+            count += 1;
+        
+        for l in range(thrdIDy+guardBandLen_1sideY+1, thrdIDy+guardBandLen_1sideY+validSampLen_1sideY+1):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[l,thrdIDx];
+            
+            count += 1        
+        
+        
+        temp = cp.float32(0);
+        ordStat_largestVal = cp.float32(0)
+        # sort in decreasing order of strength upto the ordStat kth largest value
+        for i in range(ordStat):
+            for j in range(i+1,2*validSampLen_1sideX + 2*validSampLen_1sideX):
+                if (scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),i] < scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),j]):
+                        temp = scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),i];
+                        scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),i] = scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),j];
+                        scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),j] = temp
+        
+        ordStat_largestVal = scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),ordStat-1]
+        
+        if (signal_ext[thrdIDy,thrdIDx] > noiseMargin*ordStat_largestVal):
+            outputBoolVector[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX)] = 1
+        
+        
+        
+        
