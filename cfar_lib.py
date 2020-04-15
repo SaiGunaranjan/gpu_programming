@@ -175,11 +175,7 @@ def CFAR_OS_2D_cross(signal, guardband_len_x, guardband_len_y, valid_samp_len_x,
       if cut >= np.amax(np.array([extend_signal[signal_index_y+1,signal_index_x],   \
                                   extend_signal[signal_index_y-1,signal_index_x],   \
                                   extend_signal[signal_index_y,signal_index_x+1],   \
-                                  extend_signal[signal_index_y,signal_index_x-1],   \
-                                  extend_signal[signal_index_y+1,signal_index_x+1], \
-                                  extend_signal[signal_index_y+1,signal_index_x-1], \
-                                  extend_signal[signal_index_y-1,signal_index_x+1], \
-                                  extend_signal[signal_index_y-1,signal_index_x-1]])):
+                                  extend_signal[signal_index_y,signal_index_x-1]])):
           temp = cfar_window_2_D*extend_signal[signal_index_y-cfar_half_window_len_y:signal_index_y+cfar_half_window_len_y+1, \
                                                signal_index_x-cfar_half_window_len_x:signal_index_x+cfar_half_window_len_x+1]
           sorted_Temp = -1*np.sort(-1*temp.flatten())
@@ -275,11 +271,7 @@ def CFAR_CA_2D_cross(signal, guardband_len_x, guardband_len_y, valid_samp_len_x,
       if cut >= np.amax(np.array([extend_signal[signal_index_y+1,signal_index_x], \
                                   extend_signal[signal_index_y-1,signal_index_x], \
                                       extend_signal[signal_index_y,signal_index_x+1], \
-                                          extend_signal[signal_index_y,signal_index_x-1], \
-                                              extend_signal[signal_index_y+1,signal_index_x+1], \
-                                                  extend_signal[signal_index_y+1,signal_index_x-1], \
-                                                      extend_signal[signal_index_y-1,signal_index_x+1], \
-                                                          extend_signal[signal_index_y-1,signal_index_x-1]])):
+                                          extend_signal[signal_index_y,signal_index_x-1]])):
           temp = cfar_window_2_D*extend_signal[signal_index_y-cfar_half_window_len_y:signal_index_y+cfar_half_window_len_y+1, \
                                                signal_index_x-cfar_half_window_len_x:signal_index_x+cfar_half_window_len_x+1]
           noise_power = np.sum(temp)/(2*(valid_samp_len_x+valid_samp_len_y))

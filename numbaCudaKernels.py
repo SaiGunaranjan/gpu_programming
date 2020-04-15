@@ -6,6 +6,7 @@ Created on Tue Mar 22 15:22:01 2020
 """
 
 from numba import cuda
+import numba
 import cupy as cp
 
 @cuda.jit('void(float32[:],float32[:],float32[:],int32,int32)')
@@ -49,7 +50,7 @@ def conv_2d(inputImageExtnd, pointSpreadFn, outputImage, InputLenX, InputLenY, p
     
     
 
-@cuda.jit('void(float32[:], int32, int32, int32, float32[:,:], float32, float32[:])')
+@cuda.jit('void(float32[:], int32, int32, int32, float32[:,:], float32, int32[:])')
 def CFAR_CA_GPU(signal_ext, origSignalLen , guardBandLen_1side, validSampLen_1side, scratchPad, noiseMargin, outputBoolVector):
     
     thrdID = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
@@ -81,7 +82,7 @@ def CFAR_CA_GPU(signal_ext, origSignalLen , guardBandLen_1side, validSampLen_1si
         
         
 
-@cuda.jit('void(float32[:], int32, int32, int32, float32[:,:], float32, int32, float32[:])')
+@cuda.jit('void(float32[:], int32, int32, int32, float32[:,:], float32, int32, int32[:])')
 def CFAR_OS_GPU(signal_ext, origSignalLen , guardBandLen_1side, validSampLen_1side, scratchPad, noiseMargin, ordStat, outputBoolVector):
     
     thrdID = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
@@ -116,4 +117,58 @@ def CFAR_OS_GPU(signal_ext, origSignalLen , guardBandLen_1side, validSampLen_1si
         
         if (signal_ext[thrdID] > noiseMargin*ordStat_largestVal):
             outputBoolVector[thrdID-(origSignalLen-1)] = 1
+
+
+@cuda.jit('void(float32[:,:], int32, int32, int32, int32, int32, int32, float32[:,:,:], float32, int32[:,:])')
+def CFAR_CA_2D_cross_GPU(signal_ext, origSignalLenX, origSignalLenY, guardBandLen_1sideX, guardBandLen_1sideY, validSampLen_1sideX, validSampLen_1sideY,  scratchPad, noiseMargin, outputBoolVector):
+
+    
+    thrdIDx = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    thrdIDy = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    
+    
+    if (thrdIDx < guardBandLen_1sideX + validSampLen_1sideX) or (thrdIDx > origSignalLenX + guardBandLen_1sideX + validSampLen_1sideX - 1) or (thrdIDy < guardBandLen_1sideY + validSampLen_1sideY) or (thrdIDy > origSignalLenY+ guardBandLen_1sideY + validSampLen_1sideY - 1):
+        return;
         
+    if thrdIDy == 93 and thrdIDx == 56:
+        print('SignalVal =',signal_ext[thrdIDy,thrdIDx])
+    
+    # check for local maxima on the CUT i.e. signal_ext[thrdID]
+    if (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy,thrdIDx-1]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy,thrdIDx+1]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy-1,thrdIDx]) and (signal_ext[thrdIDy,thrdIDx] >= signal_ext[thrdIDy+1,thrdIDx]):
+        count = cp.int32(0)
+        for i in range(thrdIDx-guardBandLen_1sideX-validSampLen_1sideX, thrdIDx-guardBandLen_1sideX):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[thrdIDy,i]
+            if thrdIDy == 93 and thrdIDx == 56:
+                print('LeftSamples[',i,']=',signal_ext[thrdIDy,i])
+            
+            count += 1;
+        
+        for j in range(thrdIDx+guardBandLen_1sideX+1, thrdIDx+guardBandLen_1sideX+validSampLen_1sideX+1):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[thrdIDy,j];
+            
+            count += 1
+            
+        for k in range(thrdIDy-guardBandLen_1sideY-validSampLen_1sideY, thrdIDy-guardBandLen_1sideY):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[k,thrdIDx]
+            
+            count += 1;
+        
+        for l in range(thrdIDy+guardBandLen_1sideY+1, thrdIDy+guardBandLen_1sideY+validSampLen_1sideY+1):
+            scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),count] = signal_ext[l,thrdIDx];
+            
+            count += 1        
+        
+        
+        avgNoisePower = cp.float32(0)
+        for ele in range(2*validSampLen_1sideX + 2*validSampLen_1sideX):
+            avgNoisePower += scratchPad[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), \
+                                        thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX),ele];
+            
+        avgNoisePower = avgNoisePower/(2*validSampLen_1sideX + 2*validSampLen_1sideX)
+                
+        if (signal_ext[thrdIDy,thrdIDx] > noiseMargin*avgNoisePower):
+            outputBoolVector[thrdIDy-(guardBandLen_1sideY + validSampLen_1sideY), thrdIDx-(guardBandLen_1sideX + validSampLen_1sideX)] = 1
