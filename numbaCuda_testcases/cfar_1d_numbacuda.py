@@ -11,6 +11,9 @@ Created on Mon Feb  4 15:30:40 2019
 # Threshold_Beta : Linear multiplicative factor
 # OrderedStatisticIndex:Pick the Kth index peak out of the window values
 
+
+import sys
+sys.path.append("..")
 import numpy as np
 import matplotlib.pyplot as plt
 import cfar_lib

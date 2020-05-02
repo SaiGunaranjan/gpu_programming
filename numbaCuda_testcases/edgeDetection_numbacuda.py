@@ -47,7 +47,7 @@ def sobelOperator(numSamples):
 
 plt.close('all')
 
-imageFolderPath = 'test_images\\'
+imageFolderPath = '..\\test_images\\'
 imageName = imageFolderPath + 'boat.png' #'1Orig.jpg' #'barbara.png' # 'CheckboardWithNoise.jpg' 
 inputImage = imageio.imread(imageName)
 

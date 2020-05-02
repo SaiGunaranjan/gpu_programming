@@ -5,7 +5,8 @@ Created on Wed Apr  8 20:01:56 2020
 @author: saiguna
 """
 
-
+import sys
+sys.path.append("..")
 import numpy as np
 import matplotlib.pyplot as plt
 import cfar_lib
