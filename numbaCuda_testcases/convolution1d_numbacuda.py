@@ -7,6 +7,8 @@ Created on Sun Mar 22 20:25:12 2020
 
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
+sys.path.append("..")
 from time import time
 import cupy as cp
 from numbaCudaKernels import conv_1d
@@ -39,17 +41,17 @@ output_signal_cpu = np.convolve(inp_signal_cpu,impulse_response_cpu);
 t4 = time();
 
 print('Data transfer time = {0:.0f} ms'.format((t2-t1)*1000));
-print('GPU compute + Fetch time = {0:.0f} ms'.format((t3-t2)*1000));
-print('Total GPU transfer + compute + fetch time = {0:.0f} ms'.format((t3-t1)*1000))
+print('NUMBA CUDA GPU compute + Fetch time = {0:.0f} ms'.format((t3-t2)*1000));
+print('Total GPU transfer + compute + fetch time using NUMBA CUDA= {0:.0f} ms'.format((t3-t1)*1000))
 print('CPU compute time = {0:.0f} ms'.format((t4-t3)*1000));
 
 
 if 1:
-    plt.figure(1);
+    plt.figure(1,figsize=(20,10));
     plt.subplot(121)
     plt.plot(output_signal_cpu,'-o',label='cpu');
     # plt.plot(output_signal_cp,'-o',label='cupy');
-    plt.plot(output_signal_ker,'-o',label='numba');
+    plt.plot(output_signal_ker,'-o',alpha=0.4,label='numba');
     plt.legend();
     plt.grid(True)
     plt.subplot(122)

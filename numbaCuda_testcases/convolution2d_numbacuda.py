@@ -18,7 +18,7 @@ from scipy import signal
 
 plt.close('all')
 
-imageFolderPath = 'test_images\\'
+imageFolderPath = '..\\test_images\\'
 imageName = imageFolderPath + '1Orig.jpg' #'barbara.png' # 'CheckboardWithNoise.jpg' 
 inputImage = imageio.imread(imageName)
 
