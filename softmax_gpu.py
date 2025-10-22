@@ -36,6 +36,7 @@ import cupy as cp
 import torch
 from numba import cuda
 import math
+from time import time
 np.random.seed(100)
 
 
@@ -48,16 +49,22 @@ logits = np.random.normal(loc=mean, scale=std_dev, size=(size_matrix,)).astype(n
 
 #%%
 # This is the standard implementation of softmax using formula
+t1 = time()
 logits_ = logits - np.amax(logits)
 numerator = np.exp(logits_)
 denominator = np.sum(numerator)
 soft_max_singleshot = numerator/denominator
+t2 = time()
 soft_max_singleshot_sum = np.sum(soft_max_singleshot)
+print('Time for softmax computation using standard formula = {0:.0f} ms'.format((t2-t1)*1000))
 #%%
 # This is the implementation using torch library. This provides a bench mark to check if our implementation is right.
+t3 = time()
 logits_tensor = torch.from_numpy(logits)
 soft_max_singleshot_torch = torch.softmax(logits_tensor,dim=0,dtype=torch.float32).numpy()
+t4 = time()
 soft_max_singleshot_torch_sum = np.sum(soft_max_singleshot_torch)
+print('Time for softmax computation using pytorch implementation = {0:.0f} ms'.format((t4-t3)*1000))
 #%%
 # This implementation is a sliding window based softmax computation when there is a constraint on the memory.
 # We perform a sliding window based computation of the softmax denominator by carefully updating the max value
@@ -65,6 +72,7 @@ soft_max_singleshot_torch_sum = np.sum(soft_max_singleshot_torch)
 chunk_size = np.int32(1024) # This is the window size of memory available to perform the computation
 denom = 0
 old_max_val = float('-inf')
+t5 = time()
 for i in range(0,size_matrix,chunk_size):
     if i+chunk_size > size_matrix:
         window_data = logits[i::]
@@ -77,6 +85,8 @@ for i in range(0,size_matrix,chunk_size):
     old_max_val = new_max_val
 
 soft_max_windowbased = np.exp(logits - new_max_val)/denom
+t6 = time()
+print('Time for softmax computation using Sliding window with fixed memory = {0:.0f} ms'.format((t6-t5)*1000))
 soft_max_windowbased_sum = np.sum(soft_max_windowbased)
 eps=1e-12
 kl_torch_vs_window = np.sum(soft_max_singleshot_torch * (np.log(soft_max_singleshot_torch + eps) - np.log(soft_max_windowbased + eps)))
@@ -110,7 +120,7 @@ def local_sum_max_gpu(logits_gpu,max_per_chunk,sum_per_chunk,num_chunks,chunk_si
 num_chunks = cp.int32(np.ceil(len(logits)/chunk_size))
 threads_per_block = 32 # Threads per block or warp size
 blocks_per_grid = int(np.ceil(num_chunks/threads_per_block))
-
+t7 = time()
 logits_gpu = cp.asarray(logits,dtype=cp.float32)
 max_per_chunk = cp.zeros((num_chunks,),dtype=cp.float32)
 sum_per_chunk = cp.zeros((num_chunks,),dtype=cp.float32)
@@ -123,9 +133,10 @@ cuda.synchronize()
 global_max = cp.amax(max_per_chunk)
 denom_gpu = cp.sum(cp.exp(max_per_chunk-global_max) * sum_per_chunk) # Adjust the scaling for each local denominator sum
 soft_max_gpu = cp.exp(logits_gpu - global_max)/denom_gpu
+t8 = time()
 soft_max_gpu = cp.asnumpy(soft_max_gpu)
 soft_max_gpu_sum = np.sum(soft_max_gpu)
-
+print('Time for softmax computation using GPU = {0:.0f} ms'.format((t8-t7)*1000))
 kl_torch_vs_gpu = np.sum(soft_max_singleshot_torch * (np.log(soft_max_singleshot_torch + eps) - np.log(soft_max_gpu + eps)))
 error_per_sample_gpu = np.sum(soft_max_singleshot_torch - soft_max_gpu)/size_matrix
 
