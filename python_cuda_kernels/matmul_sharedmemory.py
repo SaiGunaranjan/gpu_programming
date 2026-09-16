@@ -33,6 +33,10 @@ compare the timings with global memory only based mat mul on GPU.
 
 My implementation is based on the below video lecture:
     https://www.youtube.com/watch?v=Q3GgbfGTnVc
+    
+Action Items:
+Time the kernel after a warmup run. 
+Use this chatGPT link: https://chatgpt.com/share/6963d941-d704-8004-a1c7-0d3dddb00a1c
 
 """
 

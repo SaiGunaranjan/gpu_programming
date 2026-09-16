@@ -76,9 +76,11 @@ soft_max_singleshot_sum = np.sum(soft_max_singleshot)
 print('Time for softmax computation using standard formula = {0:.0f} ms'.format((t2-t1)*1000))
 #%%
 # This is the implementation using torch library. This provides a bench mark to check if our implementation is right.
+torch.cuda.synchronize()
 t3 = time()
 logits_tensor = torch.from_numpy(logits)
 soft_max_singleshot_torch = torch.softmax(logits_tensor,dim=0,dtype=torch.float32).numpy()
+torch.cuda.synchronize()
 t4 = time()
 soft_max_singleshot_torch_sum = np.sum(soft_max_singleshot_torch)
 print('Time for softmax computation using pytorch implementation = {0:.0f} ms'.format((t4-t3)*1000))
@@ -183,6 +185,7 @@ threads_per_block = 32 # Threads per block or warp size
 blocks_per_grid = int(np.ceil(num_chunks/threads_per_block))
 
 logits_gpu = cp.asarray(logits,dtype=cp.float32)
+torch.cuda.synchronize()
 t7 = time()
 max_per_chunk = cp.zeros((num_chunks,),dtype=cp.float32)
 sum_per_chunk = cp.zeros((num_chunks,),dtype=cp.float32)
@@ -196,6 +199,7 @@ global_max = cp.amax(max_per_chunk)
 denom_gpu = cp.sum(cp.exp(max_per_chunk-global_max) * sum_per_chunk) # Adjust the scaling for each local denominator sum
 soft_max_gpu = cp.exp(logits_gpu - global_max)/denom_gpu
 # cp.cuda.get_current_stream().synchronize()
+torch.cuda.synchronize()
 t8 = time()
 soft_max_gpu = cp.asnumpy(soft_max_gpu)
 soft_max_gpu_sum = np.sum(soft_max_gpu)
@@ -207,6 +211,7 @@ error_per_sample_gpu = np.sum(soft_max_singleshot_torch - soft_max_gpu)/size_mat
 # Block level reductions using shared memory across threads of a block
 threads_per_block = 256 # Threads per block or warp size
 blocks_per_grid = int(np.ceil(num_chunks/threads_per_block))
+torch.cuda.synchronize()
 t9 = time()
 block_max = cp.zeros((blocks_per_grid,),dtype=cp.float32)
 block_sum = cp.zeros((blocks_per_grid,),dtype=cp.float32)
@@ -215,6 +220,7 @@ cuda.synchronize()
 global_max_block = cp.amax(block_max)
 denom_gpu_block = cp.sum(cp.exp(block_max-global_max_block) * block_sum) # Adjust the scaling for each local denominator sum
 soft_max_gpu_block = cp.exp(logits_gpu - global_max_block)/denom_gpu_block
+torch.cuda.synchronize()
 t10 = time()
 print('Time for softmax computation on GPU using shared memory= {0:.0f} ms'.format((t10-t9)*1000))
 

@@ -14,12 +14,13 @@ import cupy as cp
 import imageio
 from numbaCudaKernels import conv_2d
 from scipy import signal
+import torch
 
 
 plt.close('all')
 
 imageFolderPath = '..\\test_images\\'
-imageName = imageFolderPath + '1Orig.jpg' #'barbara.png' # 'CheckboardWithNoise.jpg' 
+imageName = imageFolderPath + '1Orig.jpg' #'barbara.png' # 'CheckboardWithNoise.jpg'
 inputImage = imageio.imread(imageName)
 
 
@@ -63,7 +64,7 @@ t3 = time();
 for ele in range(inputImage.shape[2]):
     conv_2d[blkPerGrid,thrdPerBlock](inputImage_gpu_ext[:,:,ele], pointSpreadFn_gpu, outputImage, inputImageLenX, inputImageLenY, psfOneSideLenX, psfOneSideLenY)
     outputImage_ker[:,:,ele] = cp.asnumpy(outputImage)
-
+torch.cuda.synchronize()
 
 t4 = time();
 outputImage_cpu = np.zeros((outputImage.shape[0],outputImage.shape[1],inputImage.shape[2]),dtype=np.float32)
