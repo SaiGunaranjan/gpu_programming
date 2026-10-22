@@ -127,3 +127,11 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# C / C++ / CUDA Build Artifacts
+*.exe
+*.exp
+*.lib
+
+# Local scratch / experiments
+backup/
