@@ -132,3 +132,6 @@ dmypy.json
 *.exe
 *.exp
 *.lib
+
+# Local scratch / experiments
+backup/
