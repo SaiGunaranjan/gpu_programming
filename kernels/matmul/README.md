@@ -50,8 +50,3 @@ One row per revision. Time is per call, after warm-up; see the timing method in
   return value is not used, so a failed launch reports nothing.
 - [ ] **The C check in `main` uses `!=`.** It works only because the test matrices are small
   integers, so every sum is exact. Random floats need a tolerance.
-
-Triton:
-
-- [ ] `matrix_multiplication_tile_stride_non_working.py` (a strided-tensor experiment that doesn't
-  work yet) is still outside the repo, in the learning folder.
