@@ -135,3 +135,13 @@ dmypy.json
 
 # Local scratch / experiments
 backup/
+
+# Linux build outputs. nvcc binaries have no extension, so under kernels/ ignore every
+# extension-less file (directories and files with an extension are re-included).
+kernels/**/*
+!kernels/**/
+!kernels/**/*.*
+*.o
+*.out
+*.cubin
+*.fatbin
