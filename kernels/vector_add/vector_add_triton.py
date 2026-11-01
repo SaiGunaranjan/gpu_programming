@@ -4,7 +4,7 @@ import triton.language as tl
 
 
 @triton.jit
-def add_kernel(
+def vector_add_kernel(
     x_ptr, y_ptr, out_ptr,   # pointers to the three tensors
     n_elements,               # runtime size — a plain int
     BLOCK_SIZE: tl.constexpr,  # compile-time constant
@@ -20,17 +20,17 @@ def add_kernel(
     tl.store(out_ptr + offsets, out, mask=mask)
 
 
-def add(x, y):
-    out = torch.empty_like(x)
-    n_elements = out.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    add_kernel[grid](x, y, out, n_elements, BLOCK_SIZE=1024)
-    return out
+def solve(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor, N: int):
+    BLOCK_SIZE = 1024
+    grid = lambda meta: (triton.cdiv(N, meta["BLOCK_SIZE"]),)
+    vector_add_kernel[grid](a, b, c, N, BLOCK_SIZE=BLOCK_SIZE)
 
-x = torch.randn(100_000, device='cuda')
-y = torch.randn(100_000, device='cuda')
-out = add(x,y)
-out_torch = x + y
+N = 25_000_000
+a = torch.randn(N, device='cuda')
+b = torch.randn(N, device='cuda')
+c = torch.full((N,), float('-inf'), device='cuda')
+solve(a,b,c,N)
+c_torch = a + b
 
-torch.testing.assert_close(out, out_torch)
-print("OK  max abs diff =", (out - out_torch).abs().max().item())
+torch.testing.assert_close(c, c_torch)
+print("OK  max abs diff =", (c - c_torch).abs().max().item())
