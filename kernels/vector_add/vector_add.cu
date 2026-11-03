@@ -155,6 +155,28 @@ int main() {
            kern.median_ms * 1e3, kern.min_ms * 1e3, kern.mean_ms * 1e3, kern_bw,
            100 * kern_bw / peak_spec, 100 * kern_bw / copy_bw);
 
+    // ---- Threads-per-block sweep (1 element per thread) ----
+    printf("\nthreads/block sweep: median us, GB/s\n");
+    for (int tpb = 32; tpb <= 1024; tpb *= 2) {
+        int bpg = (N + tpb - 1) / tpb;   // recomputed for this block size
+
+        cudaMemset(d_C, 0xFF, size);     // NaN pattern: elements the kernel skips stay NaN
+        Timing t = time_gpu([&] { vectorAdd<<<bpg, tpb>>>(d_A, d_B, d_C, N); }, warmup, reps);
+
+        err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            printf("%5d threads: CUDA error %s\n", tpb, cudaGetErrorString(err));
+            continue;
+        }
+        cudaMemcpy(h_C.data(), d_C, size, cudaMemcpyDeviceToHost);
+        bool ok = true;
+        for (int i = 0; i < N; ++i)
+            if (h_C[i] != h_A[i] + h_B[i]) { ok = false; break; }
+
+        printf("%5d threads, %8d blocks: %8.1f us  %6.1f GB/s  %s\n",
+               tpb, bpg, t.median_ms * 1e3, gb_per_s(kern_bytes, t.median_ms), ok ? "ok" : "WRONG");
+    }
+
     // Free memory
     cudaFree(d_A);
     cudaFree(d_B);
