@@ -9,8 +9,8 @@ it taught about the GPU.
 
 | operator | source | CUDA C++ | Triton | torch | branch |
 | --- | --- | --- | --- | --- | --- |
-| [`vector_add`](vector_add/) | [LeetGPU](https://leetgpu.com/challenges/vector-addition) | done | written, not in repo yet | todo | `18-vector-addition--triton-vs-cuda-cpp-vs-torch` |
-| [`matrix_add`](matrix_add/) | [LeetGPU](https://leetgpu.com/challenges/matrix-addition) | done | written, not in repo yet | todo | `19-matrix-addition-triton-vs-cuda-cpp-vs-torch` |
+| [`vector_add`](vector_add/) | [LeetGPU](https://leetgpu.com/challenges/vector-addition) | done, timed | done, autotuned, timed | timed | merged |
+| [`matrix_add`](matrix_add/) | [LeetGPU](https://leetgpu.com/challenges/matrix-addition) | done | done | todo | merged |
 | [`matmul`](matmul/) | [LeetGPU](https://leetgpu.com/challenges/matrix-multiplication) | naive done; 2D blocktiling in progress | written, not in repo yet | todo | `17-matmul-triton-vs-cuda-cpp-vs-torch` |
 | `conv1d` | [LeetGPU](https://leetgpu.com/challenges/1d-convolution) | written, not in repo yet | written, not in repo yet | todo | `20-1d-convolution-triton-vs-cuda-cpp-vs-torch` |
 | `matrix_transpose` | [LeetGPU](https://leetgpu.com/challenges/matrix-transpose) | todo | written, not in repo yet | todo | `21-matrix-transpose-triton-vs-cuda-cpp-vs-torch` |
@@ -50,6 +50,7 @@ idea.
 | `kernels/<op>/README.md` | the problem and its LeetGPU link; the LeetGPU benchmark shapes; naming notes; the variants table; **a performance table with one row per revision** (file, commit, change, time, TFLOP/s or GB/s, % of torch); open issues |
 | `kernels/<op>/LEARNINGS_CUDA_CPP.md`, `LEARNINGS_TRITON.md` | learnings for that problem: how it was coded, the bugs and challenges, GPU architecture lessons, profiling observations |
 | [`learnings/CUDA_CPP_GENERAL.md`](../learnings/CUDA_CPP_GENERAL.md), [`learnings/TRITON_GENERAL.md`](../learnings/TRITON_GENERAL.md) | lessons that apply across problems |
+| [`learnings/PROFILING_GENERAL.md`](../learnings/PROFILING_GENERAL.md) | timing and profiling, for every backend: peaks, intensity and the ridge point, events and `do_bench`, size regimes, occupancy |
 
 ## Build and run
 
@@ -105,6 +106,19 @@ python kernels/<operator>/bench.py
 
 ## Timing method
 
-*To be written when the first `bench.py` lands.* It will record the GPU, the CUDA, driver, Triton
-and torch versions, the warm-up and repeat counts, and the problem shapes (the LeetGPU benchmark
-configurations, listed in each operator's README).
+What every performance table in `kernels/<op>/README.md` uses. Why each rule exists:
+[`learnings/PROFILING_GENERAL.md`](../learnings/PROFILING_GENERAL.md).
+
+- **GPU time only, from CUDA events.** Host<->device copies are not timed. CUDA C++:
+  `time_gpu(fn, warmup, reps)` (in [`vector_add/vector_add.cu`](vector_add/vector_add.cu)): 20
+  warm-up calls, then 100 timed calls with an event after each. Triton and torch:
+  `triton.testing.do_bench(fn, warmup=100, rep=100, return_mode='all')` (milliseconds of warm-up and
+  of timed runs), L2 flushed before every run.
+- **Report the median** time per call (also min and mean where useful).
+- **Problem size:** the LeetGPU benchmark configuration, listed in each operator's README. Check it
+  is inside the regime being measured (e.g. far larger than the 4 MB L2 for a DRAM-bound kernel).
+- **Metrics:** GB/s = minimum bytes moved / time (each input read once, each output written once;
+  decimal GB). TFLOP/s = FLOPs / time. Compare with the GPU's peaks, and with a device-to-device
+  copy as the practical bandwidth peak.
+- **torch baselines write into a preallocated output** (`out=`), like the kernels do.
+- **Record** the GPU, CUDA, driver, torch and Triton versions with each table.
