@@ -145,3 +145,6 @@ kernels/**/*
 *.out
 *.cubin
 *.fatbin
+# Repeated here because the kernels/ re-include rules above would un-ignore them.
+__pycache__/
+*.py[cod]
