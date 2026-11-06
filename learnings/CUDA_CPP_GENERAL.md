@@ -111,6 +111,53 @@ Triton notes Q1, Q18–Q20). The only manual one, `tl.debug_barrier()` (= `__syn
 rare cases where threads of one program hand data to each other through **global** memory
 (`tl.store` then `tl.load`), which the compiler doesn't track. *(Added 2026-10-22.)*
 
+### 2.4 Shared memory limits: per block vs per SM, and why static arrays stop at 48 KB
+*Added 2026-11-06, from `matrix_transpose_smem.cu` with `BM = BK = 128`*
+
+A 128×129 `float` tile (66,048 bytes) fails at **compile time**:
+```
+ptxas error : Entry function '...' uses too much shared data (0x10200 bytes, 0xc000 max)
+```
+`0xc000` is 49,152 bytes = 48 KB, even though the GPU (RTX 4090, sm_89) has 100 KB per SM.
+There are three different limits. Query them with `cudaGetDeviceProperties`:
+
+| property | sm_89 value | what it is |
+|---|---|---|
+| `sharedMemPerMultiprocessor` | 102,400 (100 KB) | **Hardware, per SM.** Shared by all blocks resident on that SM. |
+| `sharedMemPerBlockOptin` | 101,376 (99 KB) | **Hardware-derived, per block.** The per-SM 100 KB minus a 1 KB per-block system reserve (`reservedSharedMemPerBlock` = 1,024). One block can never use more, even when it's alone on the SM. |
+| `sharedMemPerBlock` | 49,152 (48 KB) | **Software default, per block.** Kept for backward compatibility (older GPUs had 48 KB). Going above it needs an explicit opt-in. Also the hard ceiling for **static** `__shared__` arrays. |
+
+The analogy with threads: a block can have at most 1,024 threads, while an SM can hold 1,536
+(48 warps on sm_89). Per-block limits decide **whether a kernel can launch**; per-SM limits decide
+**how many blocks run at once** (occupancy).
+
+**Why the error is at compile time.** A static array (`__shared__ float t[BM][BK+1];`) has its
+size fixed in the binary, so ptxas checks it against 48 KB and refuses. Static shared memory can
+never exceed 48 KB, on any GPU.
+
+**Going above 48 KB: dynamic shared memory plus an opt-in.**
+1. Declare `extern __shared__ float smem[];` (1-D, so index it yourself; see §6.4) and pass the size
+   in bytes as the third launch parameter: `kernel<<<grid, block, smem_bytes>>>(...)` (also §2.1, fix 2).
+2. Before the launch, raise the kernel's limit:
+   `cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);`
+   Without it, a launch asking for more than 48 KB fails **at run time** (check `cudaGetLastError()`).
+
+See the CUDA C++ Programming Guide, the shared memory section (dynamic allocation and the opt-in).
+
+**The 100 KB is itself a split.** Each Ada SM has 128 KB of on-chip memory that works as both L1
+cache and shared memory. The driver splits it (the "carveout"), and at most 100 KB can be shared
+memory; the rest stays L1. `cudaFuncAttributePreferredSharedMemoryCarveout` is a hint for the split.
+
+**Occupancy cost of a big tile** (transpose, 256 threads per block):
+
+| tile | smem per block (+1 KB reserve) | blocks per SM by smem | threads per SM |
+|---|---|---|---|
+| 64×65 floats | 16,640 B → ~17.3 KB | 5 | 1,280 of 1,536 |
+| 128×129 floats | 66,048 B → ~65.5 KB | 1 | 256 of 1,536 |
+
+Fewer resident warps means less work to hide memory latency. Whether the bigger tile pays off is
+for the timing to show.
+
 ---
 
 ## 3. Floating point: CPU vs GPU results
