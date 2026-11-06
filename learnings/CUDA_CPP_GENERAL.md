@@ -142,6 +142,13 @@ never exceed 48 KB, on any GPU.
    `cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);`
    Without it, a launch asking for more than 48 KB fails **at run time** (check `cudaGetLastError()`).
 
+**Static and dynamic can be mixed, and the opt-in limit counts both.** A kernel can have static
+`__shared__` arrays (≤ 48 KB in total) plus a dynamic one. The 99 KB opt-in limit applies to
+**static + dynamic together** (≤ 101,376 bytes on sm_89). `cudaFuncSetAttribute` only raises the
+dynamic part, and only the dynamic part can grow past 48 KB, because the size of a static array is
+checked when the code is compiled, before any attribute is read at launch. *(Tested 2026-11-06 on an
+RTX 4090: attribute 101,376 accepted, 101,377 rejected with `invalid argument`.)*
+
 See the CUDA C++ Programming Guide, the shared memory section (dynamic allocation and the opt-in).
 
 **The 100 KB is itself a split.** Each Ada SM has 128 KB of on-chip memory that works as both L1
