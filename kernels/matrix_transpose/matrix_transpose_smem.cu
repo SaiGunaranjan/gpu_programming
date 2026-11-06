@@ -35,23 +35,10 @@ __global__ void matrix_transpose_kernel(const float* input, float* output, int r
             input_tile_smem[row][col] = input[abs_row_id*cols + abs_col_id]; // Note: For the edge threadBlocks, there might be junk entries in the input_tile_smem since they are not populated with this line!
         }  
     }
+
+    // Wait for all threads to finish copying from DRAM to shared memory before starting to write back to DRAM in transposed manner
     __syncthreads();
-    // For debug
-    // __syncthreads();
-    // if ((blockIdx.x == 1) && (blockIdx.y ==1) && (threadIdx.x ==0) && (threadIdx.y==0))
-    // {
-    //     for (int i=0; i<BM; i++) //for (int i=0; i<BM; i++)
-    //     {   
-    //         printf("\n");
-    //         for (int j=BK; j<BK+1; j++) //for (int j=0; j<BK; j++)
-    //         {
-    //             printf("smem_tile[%d][%d] = %5.1f", i,j,input_tile_smem[i][j]);
-    //         }
-    //     }
-    // }
-
-
-    // Will the below logic work even for 32x32 threads, 32x32 tile size, etc? i.e will it work for all configurations?
+    
     int num_rows =  num_threads_perblock / BM;
     // int num_cols = BM;
     
@@ -144,8 +131,8 @@ int main()
         {
             if (output_h[i*rows + j] != output_from_device[i*rows + j])
             {
-                // cout << "Transpose incorrect!";
-                cout << "\noutput_h[" << i << "][" << j << "] = " << output_h[i*rows + j] << "; output_d[" << i << "][" << j << "] = " << output_from_device[i*rows + j];
+                cout << "Transpose incorrect!";
+                // cout << "\noutput_h[" << i << "][" << j << "] = " << output_h[i*rows + j] << "; output_d[" << i << "][" << j << "] = " << output_from_device[i*rows + j];
             }
         }
     }
