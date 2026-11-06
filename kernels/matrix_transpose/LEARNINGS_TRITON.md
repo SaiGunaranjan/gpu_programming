@@ -18,7 +18,8 @@ layout (coalesced, 128-bit `ld.global.v4`), exchanged through shared memory, and
 output's layout. That is the shared-memory tiled transpose, written by the compiler.
 
 The kernel uses 16,640 bytes of shared memory = 64 x **65** x 4: the tile is padded by one column,
-the standard trick against shared-memory bank conflicts.
+the standard trick against shared-memory bank conflicts (see
+[`learnings/MEMORY_ACCESS_GENERAL.md`](../../learnings/MEMORY_ACCESS_GENERAL.md), Q2–Q5).
 
 How to look: `k = kernel[grid](...)`, then `k.asm['ttgir']`, `k.asm['ptx']`, `k.metadata.shared`,
 `k.n_regs`, `k.n_spills`.

@@ -2,7 +2,8 @@
 
 Lessons that apply across problems: compiling, shared memory, barriers, floating point, launch
 configuration, debugging, memory spaces. Lessons specific to one problem live next to its code, in
-`kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md).
+`kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md). Bank conflicts and coalescing:
+[`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
 Grouped by topic, not by date. Each entry says **when** it was added and **which kernel** it came
 from. Add new entries to the matching section, or start a new section. Build and run commands live
@@ -45,6 +46,9 @@ build. See §3.
 ---
 
 ## 2. Shared memory
+
+Bank conflicts (padding, swizzling) and DRAM coalescing have their own file:
+[`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
 ### 2.1 A static `__shared__` array needs a compile-time size
 *Added 2026-10-21, from `1d_convolution_v1.cu` (the notes in its closing comment)*
@@ -467,6 +471,9 @@ What's left to pay: every warp still issues a load for every `j` and waits on L1
 
 The same reasoning applies to the input tile: neighbouring blocks' overlapping halos mostly come
 from L2, not DRAM.
+
+The same broadcast rule holds in shared memory (many threads reading one word = no bank conflict);
+see [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md), key takeaway 2 and Q11.
 
 ### 6.3 Options for a small read-only array that every thread reads (e.g. a convolution filter)
 *Added 2026-10-21, from `1d_convolution_v1.cu`*
