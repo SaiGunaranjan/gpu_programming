@@ -441,6 +441,32 @@ against hand-computed values. Test any `cdiv` formula on a tiny case first (`cdi
 **`arr[a, b]` is not 2D indexing.** Inside `[ ]` the comma is C++'s **comma operator**: evaluate
 `a`, discard it, keep `b`. So `A_smem[r, c]` = `A_smem[c]` (a whole row), and nvcc warns
 `expression has no effect`. 2D arrays need `A_smem[r][c]`.
+
+### 5.4 A missing `;` after a `struct` breaks the *next* line, so the error points to the wrong place
+*Added 2026-11-07, from `kernels/matrix_transpose/matrix_transpose_smem.cu` (the `Timing` struct)*
+
+Which `}` needs a `;`:
+
+| the `}` closes... | `;` after it? | examples |
+| --- | --- | --- |
+| a block of code | no | function body, `if`/`else`, `for`/`while`, `namespace` |
+| a type definition | **yes** | `struct`, `class`, `union`, `enum` |
+| an expression inside a statement | **yes** | `auto fn = [&] { ... };`, `int a[] = {1, 2, 3};` |
+
+**Why a struct needs it:** a struct definition is a declaration, and C++ lets you declare variables
+of the new type in the same statement, after the `}`: `struct Timing { ... } t1, t2;`. So after
+the `}` the compiler waits for variable names or a `;`.
+
+**The symptom:** with `struct Timing { ... }` and no `;`, the compiler folds the next line into the
+same declaration. Here the next line was `template <typename F>`, so nvcc reported
+`error: "template" is not allowed` at **line 22**, while the bug was at **line 20**. It also broke
+the parse of the kernel's own `template<int BM, int BK>` further down, which produced about ten
+follow-on errors (`identifier "BM" is undefined`, `"lin_tid" is undefined`, ...).
+
+**Lesson:** fix the **first** error and recompile. Follow-on errors are often just noise. When an
+error makes no sense on its line, look at the line **above** it, especially a `}` that closes a
+`struct` or `class`.
+
 ---
 
 ## 6. Memory spaces

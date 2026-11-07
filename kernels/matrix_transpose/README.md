@@ -14,21 +14,51 @@ layout conversion in Triton).
 
 | File | Description | Status |
 | --- | --- | --- |
-| `matrix_transpose.cu` | CUDA C++ kernel. | todo |
+| `matrix_transpose_naive.cu` | CUDA C++, one thread per element: reads are coalesced, writes are strided by `rows`. | done |
+| `matrix_transpose_smem.cu` | CUDA C++, 64 x 64 tile staged in shared memory (padded +1 column against bank conflicts), 16 x 16 threads, each thread handles 4 x 4 elements; both reads and writes coalesced. | done |
 | `matrix_transpose_triton.py` | 2-D grid of 64 x 64 tiles: load a tile with input strides, `tl.trans` it, store it with output strides. Masks handle edge tiles. | done |
 | `matrix_transpose_torch.py` | torch baseline (`input.T.contiguous()`). | todo |
 
 ## Benchmark shapes
 
-*To be filled in from the LeetGPU problem's benchmark configurations.*
+LeetGPU's benchmark configuration: **rows = 7000, cols = 6000** (42M floats, 168 MB in, 168 MB out).
+All timings below use this shape.
 
 ## Performance
 
 One row per revision; see the timing method in [`../README.md`](../README.md#timing-method).
+Bytes moved = 2 x rows x cols x 4 B (each element read once, written once).
 
-| Variant (file @ commit) | Change | rows x cols | Time (ms) | GB/s | % of torch |
-| --- | --- | --- | --- | --- | --- |
-| | | | | | |
+### Measured on
+
+| | |
+| --- | --- |
+| GPU | NVIDIA A100-SXM4-80GB, compute capability 8.0 (sm_80) |
+| SMs, L2 | 108 SMs, 40 MB L2 |
+| Memory | 80 GB HBM2e, 5120-bit bus, 1593 MHz |
+| Theoretical peak DRAM BW | 1593 MHz x 2 x 640 B = **2,039 GB/s** |
+| Practical peak (D2D `cudaMemcpy`) | **1,667 GB/s** (81.8% of spec; 0.2015 ms median for 7000 x 6000) |
+| Software | CUDA 12.8 (nvcc 12.8.93), driver 595.91.07, torch 2.8.0+cu128, Triton 3.4.0 |
+
+| Variant (file @ commit) | Change | Launch config | rows x cols | Time (ms) | GB/s | % of spec | % of D2D copy | % of torch |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `matrix_transpose_smem.cu` @ uncommitted (kernel as in `ce0f3a1`) | first timed version; `cudaDeviceSynchronize()` moved out of `solve` so it isn't timed | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2340 | 1,436 | 70.4% | 86.2% | *pending* |
+
+### Why the D2D copy isn't an apples-to-apples target
+
+The device-to-device `cudaMemcpy` moves the same number of bytes as a transpose, but it isn't a fair
+ceiling for these kernels:
+
+- **Access width.** `cudaMemcpy` is NVIDIA's tuned copy and moves data in wide chunks (up to 16 B per
+  access). Our kernels move one 4-byte `float` per thread per access, so fewer bytes are in flight
+  per memory instruction. Even a plain copy kernel with 4-byte accesses falls clearly short of
+  `cudaMemcpy`; with 16-byte (`float4`) accesses it matches or beats it.
+- **No reordering.** A copy reads and writes the same contiguous addresses. A transpose has to
+  regroup the data (via shared memory, plus a `__syncthreads()` per tile), which costs a little
+  more even when both reads and writes are coalesced.
+
+So "% of D2D copy" is a useful reference, but 100% isn't reachable with 4-byte accesses. Closing
+the gap means wider (`float4`) loads and stores, which would be a new variant.
 
 ## Open issues
 
