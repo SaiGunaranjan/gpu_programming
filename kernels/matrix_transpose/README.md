@@ -14,7 +14,7 @@ layout conversion in Triton).
 
 | File | Description | Status |
 | --- | --- | --- |
-| `matrix_transpose_naive.cu` | CUDA C++, one thread per element: reads are coalesced, writes are strided by `rows`. | done |
+| `matrix_transpose_naive.cu` | CUDA C++, no shared memory: 64 x 64 tile per block, 16 x 16 threads, each thread copies a 4 x 4 patch directly from input to output. Neighbouring threads in a warp are 4 columns apart, so reads are strided (16 B apart) and writes are strided by `rows`: neither is coalesced. | done |
 | `matrix_transpose_smem.cu` | CUDA C++, 64 x 64 tile staged in shared memory (padded +1 column against bank conflicts), 16 x 16 threads, each thread handles 4 x 4 elements; both reads and writes coalesced. | done |
 | `matrix_transpose_triton.py` | 2-D grid of BLOCK_M x BLOCK_K tiles: load a tile with input strides, `tl.trans` it, store it with output strides. Masks handle edge tiles. `solve()`: fixed config (64 x 64, 4 warps by default). `solve_autotuned()`: the same kernel under `triton.autotune`. Times both, torch and a copy with `do_bench`. | done |
 | torch baseline (in `matrix_transpose_triton.py`) | `output.copy_(input.transpose(0, 1))`, timed with `do_bench` in the Triton script; no separate torch file. | done |
@@ -42,6 +42,7 @@ Bytes moved = 2 x rows x cols x 4 B (each element read once, written once).
 
 | Variant (file @ commit) | Change | Launch config | rows x cols | Time (ms) | GB/s | % of spec | % of D2D copy | % of torch |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `matrix_transpose_naive.cu` @ uncommitted | first timed version; global to global, no shared memory | 64 x 64 tile, 16 x 16 threads, 4 x 4 per thread | 7000 x 6000 | 0.9468 | 355 | 17.4% | 21.3% | 52.6% |
 | `matrix_transpose_smem.cu` @ `106aff6` | first timed version; `cudaDeviceSynchronize()` moved out of `solve` so it isn't timed | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2340 | 1,436 | 70.4% | 86.2% | 212.6% |
 | `matrix_transpose_triton.py` @ `6fed2da` | fixed config, same tile and thread count as the smem kernel | 64 x 64 tile, 8 warps (256 threads) | 7000 x 6000 | 0.2253 | 1,491 | 73.1% | 90.2% | 220.9% |
 | `matrix_transpose_triton.py` @ `6fed2da` | autotuned (60 configs: tiles 16..128 per side, 1..16 warps, 4..64 elements per thread) | best: 32 x 128 tile, 16 warps | 7000 x 6000 | 0.2109 | 1,593 | 78.1% | 96.3% | 235.9% |
