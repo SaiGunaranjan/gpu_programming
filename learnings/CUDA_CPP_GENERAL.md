@@ -1,7 +1,7 @@
 # CUDA C++: general learnings
 
 Lessons that apply across problems: compiling, shared memory, barriers, floating point, launch
-configuration, debugging, memory spaces. Lessons specific to one problem live next to its code, in
+configuration, debugging, memory spaces, vectorized (`float4`) access and alignment. Lessons specific to one problem live next to its code, in
 `kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md). Bank conflicts and coalescing:
 [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
@@ -570,3 +570,172 @@ concern applies to kernels like matmul, where each thread keeps a small array (i
 
 Matmul-specific notes (tile levels, the outer product, index mappings, bounds when loading tiles,
 stress testing) are in [`kernels/matmul/LEARNINGS_CUDA_CPP.md`](../kernels/matmul/LEARNINGS_CUDA_CPP.md).
+
+---
+
+## 8. Vectorized access (`float4`) and alignment
+
+*Added 2026-11-08, from the discussion after timing `kernels/matrix_transpose/` (the smem kernel uses only
+32-bit accesses; the README's float4 TODO). Not yet used in any kernel here.*
+
+### 8.1 What `float4` is and why it helps
+
+`float4` is a built-in struct of 4 floats (`.x .y .z .w`): 16 bytes, declared **16-byte aligned**. Loading one
+makes the compiler emit **one 128-bit load** (SASS `LDG.E.128`, PTX `ld.global.v4.f32`) instead of four 32-bit
+ones (`LDG.E`). Stores likewise.
+
+```cpp
+float  a = in[i];                                   // 32-bit load  -> 1 register
+float4 v = reinterpret_cast<const float4*>(in)[k];  // 128-bit load -> 4 registers: in[4k .. 4k+3]
+```
+
+Same bytes, fewer instructions: one warp instruction moves 32 x 16 B = **512 B** instead of 128 B, so more bytes
+are in flight per instruction (Little's law, [`PROFILING_GENERAL.md`](PROFILING_GENERAL.md) §9). On the A100, a
+plain copy kernel reached ~74% of spec with 4-byte accesses and ~85% with `float4`, more than `cudaMemcpy`.
+
+### 8.2 Alignment: what it is
+
+**Memory is just a flat list of bytes; nothing is carved up.** "16-byte aligned" is a property of the address
+*number*: it is a multiple of 16 (the low 4 bits are `0000`), like the centimetre marks on a millimetre ruler.
+
+The same flat strip of bytes, with a tick at every address that is a multiple of 16. The ticks mark off
+**16-byte boxes** (box number = `address / 16`, position inside the box = `address % 16`); they're a way of
+*numbering* bytes, not walls in memory:
+
+```
+address: 4096            4112            4128
+         |               |               |
+bytes:   f0f0f0f0f1f1f1f1f2f2f2f2f3f3f3f3f4f4f4f4f5f5f5f5f6f6f6f6f7f7f7f7 ...   (one flat strip)
+         \_____ box 256 _____/\_____ box 257 _____/
+```
+
+(Drawing the strip wrapped every 16 bytes, one box per line, is the same picture: like text wrapped at a fixed
+line width, it's still one string. These boxes have nothing to do with the rows of a matrix.)
+
+The boxes matter because of the **hardware**: the load unit, L1 and buses are wired to move whole boxes,
+picked by the upper address bits. A 128-bit load is wired as "fetch one box"; it has no circuit to take half of
+one box and half of the next. So an aligned `float4` (f0..f3 = box 256, f4..f7 = box 257) is fine, and one
+starting at f2 fails with **`misaligned address`**. GPUs chose not to build the split-and-stitch path (x86 CPUs
+do, at some cost).
+
+The general rule (natural alignment): an N-byte access must start at a multiple of N. `float` 4 B, `float2` /
+`double` 8 B, `float4` 16 B. The larger units (32 B sectors, 128 B lines) don't cause errors; crossing them only
+costs extra transfers (coalescing, [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md)).
+
+**Which float indices may start a `float4`:** element `i` is at `base + 4i`, which is a multiple of 16 exactly
+when `i` is a multiple of 4 (given an aligned `base`). With `reinterpret_cast<float4*>(p)[k]`, vector `k` starts
+at float `4k`, so it's always aligned **if `p` is**. `(float4*)(p + 1)` starts 4 bytes off: every access misaligned.
+
+### 8.3 Who guarantees what
+
+| layer | role |
+| --- | --- |
+| DRAM | flat bytes, no structure |
+| hardware (load unit, caches) | fixed boundaries from address bits; a 128-bit access can't cross a 16 B boundary |
+| compiler | the pointer type picks the **step size** (`p[1]` = +4 B, `p4[1]` = +16 B) and the **instruction width**; it trusts casts (no check), and aligns variables it places itself (`float4` locals, `__shared__` arrays, struct members) |
+| `cudaMalloc` | software policy: every allocation starts at a multiple of 256 (so of 16 too) |
+
+**A cast changes nothing in memory.** `float4* p4 = (float4*)p;` holds the same address number. Only the
+compiler's reading changes: like reading the same book word by word vs line by line.
+
+**`cudaMalloc` never "runs out of aligned addresses":** it takes memory in big, aligned chunks and rounds every
+allocation up to its granularity (>= 256 B; `cudaMalloc(4)` still uses >= 256 B), so every block and every free gap
+starts aligned. The failure that can happen is **no contiguous free range big enough** (`cudaErrorMemoryAllocation`
+even with enough total free memory), and GPU virtual memory mostly hides physical fragmentation.
+
+### 8.4 Matrices: when the row length matters
+
+- **Row-agnostic ops** (copy, elementwise add/scale): treat the matrix as one flat array. A `float4` may span two
+  rows (with `cols = 6`, vector 1 = `(0,4) (0,5) (1,0) (1,1)`), and that's fine. Only `rows x cols` must be a
+  multiple of 4, or handle the last 1..3 elements with a scalar tail.
+- **Row-aware ops** (transpose, 2-D tiling): a thread wants 4 neighbours **in the same row**, and every row segment
+  must start aligned. Row `r` starts at element `r x cols`, so **`cols` must be a multiple of 4** (with `cols = 6`,
+  every odd row starts at byte offset 24, 72, ...: misaligned). Otherwise: scalar fallback for the leftover columns,
+  or check up front and use the scalar kernel.
+- **Both conditions are needed: aligned `base` AND `cols % 4 == 0`.** Row `r` starts at
+  `base + r x cols x 4` bytes. `cols % 4 == 0` only makes the row starts *evenly spaced* in whole 16-byte boxes,
+  measured **from `base`**; alignment is about the **absolute** address. If `base` is off a tick, every row is off by
+  the same amount (example `cols = 8`, 32 B per row):
+
+  | row | base = 4096 (aligned) | base = 4100 (4 B off) |
+  | --- | --- | --- |
+  | 0 | 4096 ✅ | 4100 ❌ |
+  | 1 | 4128 ✅ | 4132 ❌ |
+  | 2 | 4160 ✅ | 4164 ❌ |
+
+  Like fence posts every 16 m starting at 4 m: evenly spaced, none on a 16 m mark. `cudaMalloc` gives the aligned
+  `base`; the problem size gives `cols % 4 == 0`; the run-time check in §8.6 tests both.
+- **4 elements, not 16:** the hardware needs 16 **bytes** = 4 floats, so `cols % 4 == 0` is the real requirement.
+  LeetGPU's transpose (7000 x 6000) qualifies on both sides, so a hand-written CUDA `float4` kernel can vectorize
+  both loads and stores.
+- **Triton is stricter than the hardware.** It can't see stride values at compile time, so it specializes integer
+  arguments on one test only: **divisible by 16 (elements)**. It then knows the alignment and vectorizes; otherwise
+  it plays safe with scalar accesses. In the transpose: input stride 6000 = 16 x 375 → vectorized **loads**; output
+  stride 7000 = 16 x 437.5 → scalar **stores**, even though 7000 is divisible by 4 and `float4` would be legal.
+
+### 8.5 For the float4 transpose (TODO)
+
+4 neighbours in an input row become 4 neighbours in an output **column**, so you can't store the `float4` you
+loaded. Shared memory does the regrouping: load a `float4` from an input row into the tile; on the store side,
+gather 4 values that are consecutive **down a tile column** (consecutive along the output row) and store them as one
+`float4`. Re-check the thread count per tile and whether the +1 padding still avoids bank conflicts. Suggested
+warm-up: a `float4` copy or vector add first.
+Note for the smem tile: with `float tile[64][65]` (+1 padding) the tile **rows** are not 16-byte aligned (see
+§8.6), so read and write the smem tile with scalar accesses, or pick a padding / swizzle that keeps rows aligned.
+
+### 8.6 Making sure the base pointer is aligned
+*Added 2026-11-08*
+
+`reinterpret_cast<float4*>(p)[k]` is aligned for every `k` **only if `p` is**. You can't move `p`, so either you
+**know** it's aligned from where it came, or you **check** at run time and pick a path.
+
+**Where `p` comes from**
+
+| where `p` comes from | 16-byte aligned? |
+| --- | --- |
+| `cudaMalloc` | ✅ guaranteed: 256-byte aligned, and 256 = 16 x 16, so every multiple of 256 is a multiple of 16 (in binary: low 8 bits zero ⇒ low 4 bits zero). One big alignment covers every smaller one (4, 8, 16, 32, 128) |
+| a fresh PyTorch CUDA tensor (`torch.empty`, `randn`, ...) | ✅ the caching allocator also hands out large-aligned blocks |
+| **a pointer with an offset**: `p + 1`, a tensor slice like `x[:, 1:]`, or `x[1:]` with odd `cols` | ❌ not necessarily: the offset moves it off the 16-byte ticks. `p + n` is aligned only if `n % 4 == 0` (floats) |
+| a `__shared__` or local array you declare | ✅ if declared as `float4`, or with `__align__(16)` / `alignas(16)`. A plain `float` array is only promised **4**-byte alignment |
+
+**Check at run time** (the safe pattern for `solve`, which gets raw pointers from an unknown caller):
+
+```cpp
+#include <cstdint>   // uintptr_t
+bool aligned16(const void* p) { return reinterpret_cast<uintptr_t>(p) % 16 == 0; }
+
+if (aligned16(input) && aligned16(output) && cols % 4 == 0 && rows % 4 == 0)
+    transpose_float4<<<...>>>(...);   // fast path
+else
+    transpose_scalar<<<...>>>(...);   // always works
+```
+
+`reinterpret_cast<uintptr_t>(p)` turns the pointer into its plain address number; `% 16` asks "is it on a tick?".
+Triton does the same test automatically (`arg % 16 == 0` in `triton/backends/compiler.py`). A third option for flat
+1-D kernels is **peeling**: scalar for the first 1..3 elements up to a tick, `float4` for the middle, scalar tail.
+
+**Shared memory: who picks the address.** Shared memory has its own address space per block, starting at 0. There
+is no run-time allocator: the **compiler** lays out the static `__shared__` arrays at fixed offsets, honouring each
+type's alignment and inserting padding where needed. Measured on the A100 (`__cvta_generic_to_shared` gives the
+offset):
+
+```cpp
+__shared__ float  a[3];                  // @ 0    (12 B)
+__shared__ float4 b[4];                  // @ 16   (12..15 padding: float4 needs a multiple of 16)
+__shared__ float  c[5];                  // @ 80
+__shared__ __align__(16) float d[8];     // @ 112  (c ends at 100; padded to 112)
+__shared__ float  tile[64][65];          // @ 144; tile[1] @ 404, tile[2] @ 664, tile[4] @ 1184
+```
+
+- **Order:** in both tests on nvcc 12.8 the arrays were placed in declaration order, each padded up to its type's
+  alignment (a second test: `float p[1]; float4 q[1]; float r[1]; float4 s[1]; double t[1]` → 0, 16, 32, 48, 64, wasting
+  12 bytes after each `float`). The CUDA docs don't promise the order, so never compute one array's address from
+  another's; only each array's own alignment is guaranteed. Grouping arrays from largest alignment to smallest avoids
+  the padding. **Unused** `__shared__` arrays are removed entirely (a 1 KB untouched array added 0 bytes: 72 bytes smem).
+- So yes: a `float4` (or `__align__(16)`) smem array starts at a multiple of 16 (0, 16, 32, ...). A plain `float` array
+  happened to land on 0 or 144 here, but only 4-byte alignment is promised: declare it `float4` or `__align__(16)` if
+  you'll read it with `float4`.
+- **The array start isn't enough for a 2-D tile.** Each row of `tile[64][65]` is 65 x 4 = 260 bytes, and 260 % 16 = 4.
+  Rows 1, 2, 3 start 4, 8, 12 bytes off a tick (404, 664, ...); only every 4th row (1184) is aligned. The +1 padding
+  that avoids bank conflicts breaks `float4` access to the tile rows. A row length that is a multiple of 4 floats
+  (e.g. `[64][68]`, padding +4) keeps every row aligned, but changes the bank pattern: re-check conflicts.
