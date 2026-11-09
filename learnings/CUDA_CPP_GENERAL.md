@@ -618,6 +618,31 @@ one box and half of the next. So an aligned `float4` (f0..f3 = box 256, f4..f7 =
 starting at f2 fails with **`misaligned address`**. GPUs chose not to build the split-and-stitch path (x86 CPUs
 do, at some cost).
 
+**Why the ticks can't move: the address bits are wired.** The memory system splits every address by its binary
+bits: the **upper bits pick the unit** (box, sector, cache line, bank, DRAM row) and the **lower bits pick the byte
+inside it**. Picking bits costs nothing (it's just which wires go where), while splitting at arbitrary boundaries
+would need arithmetic in the address path, so almost every CPU and GPU works this way (NVIDIA's exact internals
+aren't public; the principle is standard).
+
+```
+address 4100 = 0001 0000 0000 0100
+               ^^^^^^^^^^^^^^ ^^^^
+               which 16-B box  byte inside the box (low 4 bits)
+```
+
+| hardware level | unit | "which unit" | "where inside" |
+| --- | --- | --- | --- |
+| shared memory | 32 banks x 4 B | bank = (address / 4) % 32 | low 2 bits |
+| L1 / L2 cache | 128 B lines, 32 B sectors | line = address / 128 | low 7 bits |
+| DRAM | 32-64 B bursts, KB-sized rows | upper bits | lower bits |
+
+The load/store unit checks each access against its size: an N-byte access needs its low log2(N) bits zero (`float`
+2 bits, `float2` 3, `float4` 4). That guarantees the access sits inside one unit at every level, so the data path can
+move it in one piece with byte lanes in fixed positions (box byte 0 → register byte 0, ...). A misaligned `float4`
+(e.g. at 4100) would need two fetches plus a byte shifter to stitch them; GPUs don't build that path for vector
+loads, so the check fails with `misaligned address`. Software can't declare "4100 is my new tick": you choose where
+your **data** starts, not where the hardware's units are.
+
 The general rule (natural alignment): an N-byte access must start at a multiple of N. `float` 4 B, `float2` /
 `double` 8 B, `float4` 16 B. The larger units (32 B sectors, 128 B lines) don't cause errors; crossing them only
 costs extra transfers (coalescing, [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md)).
