@@ -40,6 +40,11 @@ broadcast of same-address global reads is in [§6.2](CUDA_CPP_GENERAL.md#62-warp
 > **8. The real DRAM limit is shared bandwidth, not per-warp latency.** On the T4, 320 GB/s ≈ 200 bytes per core clock
 > for the *whole GPU* ≈ 5 bytes per clock per SM. Every wasted byte in a sector spends that shared budget.
 
+> **9. Loading a 2-D tile:** a warp stays one contiguous run only if the tile width is a multiple of 32; otherwise
+> some warps straddle two tile rows (2 runs, more sectors). Jumps *between* warps are free. Idle lanes come from
+> `BM*BK % threads` (last pass) and from the bounds check at the matrix edge. Details and a summary table:
+> [`CUDA_CPP_GENERAL.md` §9](CUDA_CPP_GENERAL.md#9-matrices-in-memory-1-d-storage-2-d-view) *(added 2026-11-10)*.
+
 ---
 
 ## Q1. I understand that DRAM reads/writes have to be coalesced so that a warp of threads reads contiguous memory locations. I want to understand reads and writes to/from shared memory in more detail. I believe shared memory is divided into 32 banks, and the 32 threads of a warp write to these 32 different banks.

@@ -1,7 +1,8 @@
 # CUDA C++: general learnings
 
 Lessons that apply across problems: compiling, shared memory, barriers, floating point, launch
-configuration, debugging, memory spaces, vectorized (`float4`) access and alignment. Lessons specific to one problem live next to its code, in
+configuration, debugging, memory spaces, vectorized (`float4`) access and alignment, matrices as 1-D
+storage with a 2-D view (masks, warps loading a tile). Lessons specific to one problem live next to its code, in
 `kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md). Bank conflicts and coalescing:
 [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
@@ -764,3 +765,96 @@ __shared__ float  tile[64][65];          // @ 144; tile[1] @ 404, tile[2] @ 664,
   Rows 1, 2, 3 start 4, 8, 12 bytes off a tick (404, 664, ...); only every 4th row (1184) is aligned. The +1 padding
   that avoids bank conflicts breaks `float4` access to the tile rows. A row length that is a multiple of 4 floats
   (e.g. `[64][68]`, padding +4) keeps every row aligned, but changes the bank pattern: re-check conflicts.
+
+---
+
+## 9. Matrices in memory: 1-D storage, 2-D view
+
+*Added 2026-11-10, from debugging and timing `kernels/matrix_transpose/matrix_transpose_smem_float4.cu`
+(questions: "how is a 35 x 35 matrix laid out?", "where do `rows`/`cols` come from in the mask?", "what do the
+warps do when a tile row isn't a multiple of 32?").*
+
+### 9.1 A matrix is one flat block; `cols` is what makes it 2-D
+
+- `cudaMalloc(rows * cols * sizeof(float))` gives **one contiguous run** of floats, no gaps. Row-major: row 0,
+  then row 1 right after it. For 35 x 35: `[0][34]` is at byte 136, `[1][0]` (the 36th float) at byte 140.
+- Memory has no rows. The 2-D view exists only in **two integers** and one formula:
+  `flat = r * cols + c`. The same 1024 floats are 32 x 32, 16 x 64 or 8 x 128 depending on `cols`: `(1, 0)` is
+  flat 32, 64 or 128. Every choice runs without error; only the shape the data was **written with** gives the
+  right answer (`main` fills `input_h[i*cols + j]` with `cols = 6000`, so the kernel must use 6000 too).
+  That's why every kernel takes `rows` and `cols` as arguments: it's the only place the shape exists.
+- **Static arrays bake the stride into the type.** `__shared__ float A[32][32]` is also one flat block; the
+  compiler turns `A[r][c]` into `base + (r*32 + c) * 4`. The +1 padding (`tile[64][65]`) is just a different
+  stride (65), which is how it shifts each row by one bank.
+- **No bounds checking anywhere.** `A[0][40]` silently becomes `A[1][8]`; past the last row is off the end of the
+  array (in C++ strictly undefined behaviour). Staying inside the shape is the kernel's job.
+- Row length in bytes decides row alignment (§8.4): 35 floats = 140 B, not a multiple of 16, so rows 1, 2, ...
+  aren't 16-byte aligned. `cudaMallocPitch` pads each row to an aligned *pitch* (then index with `r * pitch`);
+  plain `cudaMalloc` (what LeetGPU uses) never pads.
+
+### 9.2 Why the bounds mask is 2-D
+
+The mask `r < rows && c < cols` checks that a coordinate **exists in the matrix** before it's turned into a flat
+index. The formula is one-to-one only inside that range. Outside it still produces a number, just the wrong one.
+Example: 35 x 35 matrix, 32 x 32 tiles, so edge tiles have threads for columns 35..63:
+
+| missing check | example | result |
+| --- | --- | --- |
+| `c < cols` | `(0, 36)` → flat 36 = `[1][1]` | **wraps into the next row**: wrong element, no error (a write corrupts real data) |
+| `r < rows` | `(40, 0)` → flat 1400 > 1224 | **past the end of the buffer**: illegal memory access, or garbage |
+
+A single `flat < rows*cols` check would only catch the second case.
+**`float4` version:** a `float4` at `(r, c)` covers `c..c+3`. `c < cols` only proves the first float exists; the
+rest can wrap into row `r+1`. If `cols % 4 == 0` (and `c` is a multiple of 4), `c < cols` implies `c + 3 < cols`,
+so the single check is enough. That's why the LeetGPU shape 7000 x 6000 needs no extra handling.
+
+### 9.3 Loading a tile: what each warp touches
+
+The usual loop (as in `matrix_transpose_smem.cu`) walks a **tile-local** index `i` and splits it:
+
+```cpp
+for (int i = lin_tid; i < BM*BK; i += num_threads) {
+    int row = i / BK, col = i % BK;                            // tile coordinate
+    int r = block_start_row + row, c = block_start_col + col;  // matrix coordinate
+    if (r < rows && c < cols) tile[row][col] = input[r*cols + c];
+}
+```
+
+- **`col = i % BK < BK`** keeps a thread out of the neighbouring tile on the right; **the loop bound
+  `i < BM*BK`** keeps `row < BM` (the first float4 bug mixed units here and ran off the bottom of the tile).
+  `blockIdx` (via `block_start_*`) says *which* tile; `i` only ever covers this one.
+- **A tile is not contiguous in DRAM** (only its smem copy is). Tile rows are `cols` floats apart in the matrix.
+- Consecutive `i` = consecutive floats **within a tile row**. When a warp's 32 lanes cross the end of a tile row,
+  `i % BK` wraps them to the next tile row and the address **jumps**. From `(row, BK-1)` to `(row+1, 0)`:
+  `+cols` down one row, `-(BK-1)` back to column 0, so the jump is **`cols - (BK-1)` floats** (BK = 35,
+  cols = 6000: 5,966 floats). It depends on `cols`, not on `blockIdx` (the tile position cancels out).
+- **Tile width a multiple of 32** (e.g. BK = 64): warps tile each row exactly and never straddle a row end.
+  Jumps happen only **between** warps, which costs nothing: each warp issues its own request and gets its own
+  sectors anyway. What matters is the 32 addresses *inside* a warp (see
+  [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md) takeaway 6).
+- **Tile width not a multiple of 32** (e.g. BK = 35): some warps make **two** contiguous runs instead of one. That
+  means more sectors and transactions: coalescing **degrades** but doesn't break (nothing like the strided naive
+  kernel). Lanes are **not** idle because of the width: `i % BK` gives every lane an element.
+- **Full efficiency also needs aligned run starts:** a 128-byte warp run starting on a 32-byte sector boundary
+  touches 4 sectors, otherwise 5. Holds for 7000 x 6000 with BK = 64 (row = 24,000 B, a multiple of 32).
+
+**Where idle threads come from:**
+
+1. **Tile area vs thread count**, on the **last pass** of the loop: if `BM*BK % num_threads != 0`, the last pass
+   has fewer elements than threads. 35 x 35 = 1225 with 256 threads: 4 full passes (1,024) + a 5th with
+   **201 active, 55 idle**. 64 x 64 = 4096 with 256 threads divides evenly: none.
+2. **Tiles at the matrix edge** (not at every tile boundary: where two interior tiles meet, every thread works).
+   The `if` turns off lanes whose `(r, c)` is outside the matrix. The hardware masks those lanes; the warp doesn't
+   "know" anything, each thread evaluates its own condition. 7000 x 6000 with 64 x 64 tiles:
+   - **right edge:** 6000 = 93 x 64 + **48** → in every tile row, warp 1 (cols 32..63) has 16 active, 16 idle
+     lanes (**part of a warp**);
+   - **bottom edge:** 7000 = 109 x 64 + **24** → tile rows 24..63 don't exist, so their warps are **entirely idle**;
+   - **corner tile:** both.
+
+**Summary**
+
+| | coalescing within a warp | idle threads |
+| --- | --- | --- |
+| tile width a multiple of 32 | one contiguous run per warp | none (if `BM*BK % threads == 0`) |
+| tile width not a multiple of 32 | some warps split into 2 runs (more sectors) | only on the last pass, if `BM*BK % threads != 0` |
+| tiles at the matrix edge | same as above | lanes whose `(abs_row, abs_col)` is outside the matrix |
