@@ -45,7 +45,7 @@ Bytes moved = 2 x rows x cols x 4 B (each element read once, written once).
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `matrix_transpose_naive.cu` @ `3509c11` | first timed version; global to global, no shared memory | 64 x 64 tile, 16 x 16 threads, 4 x 4 per thread | 7000 x 6000 | 0.9468 | 355 | 17.4% | 21.3% | 52.6% |
 | `matrix_transpose_smem.cu` @ `106aff6` | first timed version; `cudaDeviceSynchronize()` moved out of `solve` so it isn't timed | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2340 | 1,436 | 70.4% | 86.2% | 212.6% |
-| `matrix_transpose_smem_float4.cu` @ `COMMIT` | `float4` global loads; stores still scalar | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2318 | 1,449 | 71.1% | 86.9% | 214.7% |
+| `matrix_transpose_smem_float4.cu` @ `6278088` | `float4` global loads; stores still scalar | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2318 | 1,449 | 71.1% | 86.9% | 214.7% |
 | `matrix_transpose_triton.py` @ `6fed2da` | fixed config, same tile and thread count as the smem kernel | 64 x 64 tile, 8 warps (256 threads) | 7000 x 6000 | 0.2253 | 1,491 | 73.1% | 90.2% | 220.9% |
 | `matrix_transpose_triton.py` @ `6fed2da` | autotuned (60 configs: tiles 16..128 per side, 1..16 warps, 4..64 elements per thread) | best: 32 x 128 tile, 16 warps | 7000 x 6000 | 0.2109 | 1,593 | 78.1% | 96.3% | 235.9% |
 | torch `output.copy_(input.transpose(0, 1))` | baseline | - | 7000 x 6000 | 0.4976 | 675 | 33.1% | 40.8% | 100% |
