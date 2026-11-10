@@ -94,4 +94,8 @@ so this is legal for the benchmark shape.
 
 ## Open issues
 
-*None yet.*
+- `matrix_transpose_smem_float4.cu` supports only `cols % 4 == 0` (every input row must start on a
+  16-byte boundary for the `float4` loads). `solve()` prints a message and doesn't launch otherwise;
+  use `matrix_transpose_smem.cu` for such shapes. Not planned for now; options if needed: choose the
+  scalar kernel on the host, peel a scalar head/tail per row, or load aligned 16-byte boxes and mask
+  each float.

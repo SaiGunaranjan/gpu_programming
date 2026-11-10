@@ -153,6 +153,15 @@ extern "C" void solve(const float* input, float* output, int rows, int cols)
     const int BM = 64;
     const int BK = 64;
 
+    // float4 loads need every input row to start on a 16-byte boundary, i.e. cols % 4 == 0 (see header).
+    // Otherwise the kernel would fault with a misaligned address, so don't launch it.
+    if (cols % 4 != 0)
+    {
+        printf("matrix_transpose_smem_float4: cols = %d is not a multiple of 4: not supported "
+               "(use matrix_transpose_smem.cu)\n", cols);
+        return;
+    }
+
     dim3 threadsPerBlock(16,16); //dim3 threadsPerBlock(32,32); also works (thread count is a multiple of BM)
     dim3 blocksPerGrid(((cols+BK-1) / BK), ((rows+BM-1)/BM));
 
@@ -169,6 +178,13 @@ int main()
 
     int rows = 7000;
     int cols = 6000;   // must be a multiple of 4 (float4 loads; see header)
+
+    // Exit early so solve()'s message isn't printed for every timed call
+    if (cols % 4 != 0)
+    {
+        printf("cols = %d is not a multiple of 4: this float4 kernel only supports cols %% 4 == 0\n", cols);
+        return 1;
+    }
 
     size_t size_input = rows * cols * sizeof(float);
     size_t size_output = rows * cols * sizeof(float);
