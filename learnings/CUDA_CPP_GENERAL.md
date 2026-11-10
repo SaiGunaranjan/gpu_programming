@@ -1,8 +1,10 @@
 # CUDA C++: general learnings
 
 Lessons that apply across problems: compiling, shared memory, barriers, floating point, launch
-configuration, debugging, memory spaces. Lessons specific to one problem live next to its code, in
-`kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md).
+configuration, debugging, memory spaces, vectorized (`float4`) access and alignment, matrices as 1-D
+storage with a 2-D view (masks, warps loading a tile). Lessons specific to one problem live next to its code, in
+`kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md). Bank conflicts and coalescing:
+[`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
 Grouped by topic, not by date. Each entry says **when** it was added and **which kernel** it came
 from. Add new entries to the matching section, or start a new section. Build and run commands live
@@ -45,6 +47,9 @@ build. See §3.
 ---
 
 ## 2. Shared memory
+
+Bank conflicts (padding, swizzling) and DRAM coalescing have their own file:
+[`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
 ### 2.1 A static `__shared__` array needs a compile-time size
 *Added 2026-10-21, from `1d_convolution_v1.cu` (the notes in its closing comment)*
@@ -110,6 +115,60 @@ inserts the barriers itself (`cp.async.wait_group` + `bar.sync`, seen in the mat
 Triton notes Q1, Q18–Q20). The only manual one, `tl.debug_barrier()` (= `__syncthreads()`), is for
 rare cases where threads of one program hand data to each other through **global** memory
 (`tl.store` then `tl.load`), which the compiler doesn't track. *(Added 2026-10-22.)*
+
+### 2.4 Shared memory limits: per block vs per SM, and why static arrays stop at 48 KB
+*Added 2026-11-06, from `matrix_transpose_smem.cu` with `BM = BK = 128`*
+
+A 128×129 `float` tile (66,048 bytes) fails at **compile time**:
+```
+ptxas error : Entry function '...' uses too much shared data (0x10200 bytes, 0xc000 max)
+```
+`0xc000` is 49,152 bytes = 48 KB, even though the GPU (RTX 4090, sm_89) has 100 KB per SM.
+There are three different limits. Query them with `cudaGetDeviceProperties`:
+
+| property | sm_89 value | what it is |
+|---|---|---|
+| `sharedMemPerMultiprocessor` | 102,400 (100 KB) | **Hardware, per SM.** Shared by all blocks resident on that SM. |
+| `sharedMemPerBlockOptin` | 101,376 (99 KB) | **Hardware-derived, per block.** The per-SM 100 KB minus a 1 KB per-block system reserve (`reservedSharedMemPerBlock` = 1,024). One block can never use more, even when it's alone on the SM. |
+| `sharedMemPerBlock` | 49,152 (48 KB) | **Software default, per block.** Kept for backward compatibility (older GPUs had 48 KB). Going above it needs an explicit opt-in. Also the hard ceiling for **static** `__shared__` arrays. |
+
+The analogy with threads: a block can have at most 1,024 threads, while an SM can hold 1,536
+(48 warps on sm_89). Per-block limits decide **whether a kernel can launch**; per-SM limits decide
+**how many blocks run at once** (occupancy).
+
+**Why the error is at compile time.** A static array (`__shared__ float t[BM][BK+1];`) has its
+size fixed in the binary, so ptxas checks it against 48 KB and refuses. Static shared memory can
+never exceed 48 KB, on any GPU.
+
+**Going above 48 KB: dynamic shared memory plus an opt-in.**
+1. Declare `extern __shared__ float smem[];` (1-D, so index it yourself; see §6.4) and pass the size
+   in bytes as the third launch parameter: `kernel<<<grid, block, smem_bytes>>>(...)` (also §2.1, fix 2).
+2. Before the launch, raise the kernel's limit:
+   `cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);`
+   Without it, a launch asking for more than 48 KB fails **at run time** (check `cudaGetLastError()`).
+
+**Static and dynamic can be mixed, and the opt-in limit counts both.** A kernel can have static
+`__shared__` arrays (≤ 48 KB in total) plus a dynamic one. The 99 KB opt-in limit applies to
+**static + dynamic together** (≤ 101,376 bytes on sm_89). `cudaFuncSetAttribute` only raises the
+dynamic part, and only the dynamic part can grow past 48 KB, because the size of a static array is
+checked when the code is compiled, before any attribute is read at launch. *(Tested 2026-11-06 on an
+RTX 4090: attribute 101,376 accepted, 101,377 rejected with `invalid argument`.)*
+
+See the CUDA C++ Programming Guide, the shared memory section (dynamic allocation and the opt-in).
+
+**The 100 KB is itself a split.** Each Ada SM has 128 KB of on-chip memory that works as both L1
+cache and shared memory. The driver splits it (the "carveout"), and at most 100 KB can be shared
+memory; the rest stays L1. `cudaFuncAttributePreferredSharedMemoryCarveout` is a hint for the split.
+
+**Occupancy cost of a big tile** (transpose, 256 threads per block):
+
+| tile | smem per block (+1 KB reserve) | blocks per SM by smem | threads per SM |
+|---|---|---|---|
+| 64×65 floats | 16,640 B → ~17.3 KB | 5 | 1,280 of 1,536 |
+| 128×129 floats | 66,048 B → ~65.5 KB | 1 | 256 of 1,536 |
+
+Fewer resident warps means less work to hide memory latency. Whether the bigger tile pays off is
+for the timing to show.
 
 ---
 
@@ -383,6 +442,32 @@ against hand-computed values. Test any `cdiv` formula on a tiny case first (`cdi
 **`arr[a, b]` is not 2D indexing.** Inside `[ ]` the comma is C++'s **comma operator**: evaluate
 `a`, discard it, keep `b`. So `A_smem[r, c]` = `A_smem[c]` (a whole row), and nvcc warns
 `expression has no effect`. 2D arrays need `A_smem[r][c]`.
+
+### 5.4 A missing `;` after a `struct` breaks the *next* line, so the error points to the wrong place
+*Added 2026-11-07, from `kernels/matrix_transpose/matrix_transpose_smem.cu` (the `Timing` struct)*
+
+Which `}` needs a `;`:
+
+| the `}` closes... | `;` after it? | examples |
+| --- | --- | --- |
+| a block of code | no | function body, `if`/`else`, `for`/`while`, `namespace` |
+| a type definition | **yes** | `struct`, `class`, `union`, `enum` |
+| an expression inside a statement | **yes** | `auto fn = [&] { ... };`, `int a[] = {1, 2, 3};` |
+
+**Why a struct needs it:** a struct definition is a declaration, and C++ lets you declare variables
+of the new type in the same statement, after the `}`: `struct Timing { ... } t1, t2;`. So after
+the `}` the compiler waits for variable names or a `;`.
+
+**The symptom:** with `struct Timing { ... }` and no `;`, the compiler folds the next line into the
+same declaration. Here the next line was `template <typename F>`, so nvcc reported
+`error: "template" is not allowed` at **line 22**, while the bug was at **line 20**. It also broke
+the parse of the kernel's own `template<int BM, int BK>` further down, which produced about ten
+follow-on errors (`identifier "BM" is undefined`, `"lin_tid" is undefined`, ...).
+
+**Lesson:** fix the **first** error and recompile. Follow-on errors are often just noise. When an
+error makes no sense on its line, look at the line **above** it, especially a `}` that closes a
+`struct` or `class`.
+
 ---
 
 ## 6. Memory spaces
@@ -413,6 +498,9 @@ What's left to pay: every warp still issues a load for every `j` and waits on L1
 
 The same reasoning applies to the input tile: neighbouring blocks' overlapping halos mostly come
 from L2, not DRAM.
+
+The same broadcast rule holds in shared memory (many threads reading one word = no bank conflict);
+see [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md), key takeaway 2 and Q11.
 
 ### 6.3 Options for a small read-only array that every thread reads (e.g. a convolution filter)
 *Added 2026-10-21, from `1d_convolution_v1.cu`*
@@ -483,3 +571,290 @@ concern applies to kernels like matmul, where each thread keeps a small array (i
 
 Matmul-specific notes (tile levels, the outer product, index mappings, bounds when loading tiles,
 stress testing) are in [`kernels/matmul/LEARNINGS_CUDA_CPP.md`](../kernels/matmul/LEARNINGS_CUDA_CPP.md).
+
+---
+
+## 8. Vectorized access (`float4`) and alignment
+
+*Added 2026-11-08, from the discussion after timing `kernels/matrix_transpose/` (the smem kernel uses only
+32-bit accesses; the README's float4 TODO). Not yet used in any kernel here.*
+
+### 8.1 What `float4` is and why it helps
+
+`float4` is a built-in struct of 4 floats (`.x .y .z .w`): 16 bytes, declared **16-byte aligned**. Loading one
+makes the compiler emit **one 128-bit load** (SASS `LDG.E.128`, PTX `ld.global.v4.f32`) instead of four 32-bit
+ones (`LDG.E`). Stores likewise.
+
+```cpp
+float  a = in[i];                                   // 32-bit load  -> 1 register
+float4 v = reinterpret_cast<const float4*>(in)[k];  // 128-bit load -> 4 registers: in[4k .. 4k+3]
+```
+
+Same bytes, fewer instructions: one warp instruction moves 32 x 16 B = **512 B** instead of 128 B, so more bytes
+are in flight per instruction (Little's law, [`PROFILING_GENERAL.md`](PROFILING_GENERAL.md) §9). On the A100, a
+plain copy kernel reached ~74% of spec with 4-byte accesses and ~85% with `float4`, more than `cudaMemcpy`.
+
+### 8.2 Alignment: what it is
+
+**Memory is just a flat list of bytes; nothing is carved up.** "16-byte aligned" is a property of the address
+*number*: it is a multiple of 16 (the low 4 bits are `0000`), like the centimetre marks on a millimetre ruler.
+
+The same flat strip of bytes, with a tick at every address that is a multiple of 16. The ticks mark off
+**16-byte boxes** (box number = `address / 16`, position inside the box = `address % 16`); they're a way of
+*numbering* bytes, not walls in memory:
+
+```
+address: 4096            4112            4128
+         |               |               |
+bytes:   f0f0f0f0f1f1f1f1f2f2f2f2f3f3f3f3f4f4f4f4f5f5f5f5f6f6f6f6f7f7f7f7 ...   (one flat strip)
+         \_____ box 256 _____/\_____ box 257 _____/
+```
+
+(Drawing the strip wrapped every 16 bytes, one box per line, is the same picture: like text wrapped at a fixed
+line width, it's still one string. These boxes have nothing to do with the rows of a matrix.)
+
+The boxes matter because of the **hardware**: the load unit, L1 and buses are wired to move whole boxes,
+picked by the upper address bits. A 128-bit load is wired as "fetch one box"; it has no circuit to take half of
+one box and half of the next. So an aligned `float4` (f0..f3 = box 256, f4..f7 = box 257) is fine, and one
+starting at f2 fails with **`misaligned address`**. GPUs chose not to build the split-and-stitch path (x86 CPUs
+do, at some cost).
+
+**Why the ticks can't move: the address bits are wired.** The memory system splits every address by its binary
+bits: the **upper bits pick the unit** (box, sector, cache line, bank, DRAM row) and the **lower bits pick the byte
+inside it**. Picking bits costs nothing (it's just which wires go where), while splitting at arbitrary boundaries
+would need arithmetic in the address path, so almost every CPU and GPU works this way (NVIDIA's exact internals
+aren't public; the principle is standard).
+
+```
+address 4100 = 0001 0000 0000 0100
+               ^^^^^^^^^^^^^^ ^^^^
+               which 16-B box  byte inside the box (low 4 bits)
+```
+
+| hardware level | unit | "which unit" | "where inside" |
+| --- | --- | --- | --- |
+| shared memory | 32 banks x 4 B | bank = (address / 4) % 32 | low 2 bits |
+| L1 / L2 cache | 128 B lines, 32 B sectors | line = address / 128 | low 7 bits |
+| DRAM | 32-64 B bursts, KB-sized rows | upper bits | lower bits |
+
+The load/store unit checks each access against its size: an N-byte access needs its low log2(N) bits zero (`float`
+2 bits, `float2` 3, `float4` 4). That guarantees the access sits inside one unit at every level, so the data path can
+move it in one piece with byte lanes in fixed positions (box byte 0 → register byte 0, ...). A misaligned `float4`
+(e.g. at 4100) would need two fetches plus a byte shifter to stitch them; GPUs don't build that path for vector
+loads, so the check fails with `misaligned address`. Software can't declare "4100 is my new tick": you choose where
+your **data** starts, not where the hardware's units are.
+
+The general rule (natural alignment): an N-byte access must start at a multiple of N. `float` 4 B, `float2` /
+`double` 8 B, `float4` 16 B. The larger units (32 B sectors, 128 B lines) don't cause errors; crossing them only
+costs extra transfers (coalescing, [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md)).
+
+**Which float indices may start a `float4`:** element `i` is at `base + 4i`, which is a multiple of 16 exactly
+when `i` is a multiple of 4 (given an aligned `base`). With `reinterpret_cast<float4*>(p)[k]`, vector `k` starts
+at float `4k`, so it's always aligned **if `p` is**. `(float4*)(p + 1)` starts 4 bytes off: every access misaligned.
+
+### 8.3 Who guarantees what
+
+| layer | role |
+| --- | --- |
+| DRAM | flat bytes, no structure |
+| hardware (load unit, caches) | fixed boundaries from address bits; a 128-bit access can't cross a 16 B boundary |
+| compiler | the pointer type picks the **step size** (`p[1]` = +4 B, `p4[1]` = +16 B) and the **instruction width**; it trusts casts (no check), and aligns variables it places itself (`float4` locals, `__shared__` arrays, struct members) |
+| `cudaMalloc` | software policy: every allocation starts at a multiple of 256 (so of 16 too) |
+
+**A cast changes nothing in memory.** `float4* p4 = (float4*)p;` holds the same address number. Only the
+compiler's reading changes: like reading the same book word by word vs line by line.
+
+**`cudaMalloc` never "runs out of aligned addresses":** it takes memory in big, aligned chunks and rounds every
+allocation up to its granularity (>= 256 B; `cudaMalloc(4)` still uses >= 256 B), so every block and every free gap
+starts aligned. The failure that can happen is **no contiguous free range big enough** (`cudaErrorMemoryAllocation`
+even with enough total free memory), and GPU virtual memory mostly hides physical fragmentation.
+
+### 8.4 Matrices: when the row length matters
+
+- **Row-agnostic ops** (copy, elementwise add/scale): treat the matrix as one flat array. A `float4` may span two
+  rows (with `cols = 6`, vector 1 = `(0,4) (0,5) (1,0) (1,1)`), and that's fine. Only `rows x cols` must be a
+  multiple of 4, or handle the last 1..3 elements with a scalar tail.
+- **Row-aware ops** (transpose, 2-D tiling): a thread wants 4 neighbours **in the same row**, and every row segment
+  must start aligned. Row `r` starts at element `r x cols`, so **`cols` must be a multiple of 4** (with `cols = 6`,
+  every odd row starts at byte offset 24, 72, ...: misaligned). Otherwise: scalar fallback for the leftover columns,
+  or check up front and use the scalar kernel.
+- **Both conditions are needed: aligned `base` AND `cols % 4 == 0`.** Row `r` starts at
+  `base + r x cols x 4` bytes. `cols % 4 == 0` only makes the row starts *evenly spaced* in whole 16-byte boxes,
+  measured **from `base`**; alignment is about the **absolute** address. If `base` is off a tick, every row is off by
+  the same amount (example `cols = 8`, 32 B per row):
+
+  | row | base = 4096 (aligned) | base = 4100 (4 B off) |
+  | --- | --- | --- |
+  | 0 | 4096 ✅ | 4100 ❌ |
+  | 1 | 4128 ✅ | 4132 ❌ |
+  | 2 | 4160 ✅ | 4164 ❌ |
+
+  Like fence posts every 16 m starting at 4 m: evenly spaced, none on a 16 m mark. `cudaMalloc` gives the aligned
+  `base`; the problem size gives `cols % 4 == 0`; the run-time check in §8.6 tests both.
+- **4 elements, not 16:** the hardware needs 16 **bytes** = 4 floats, so `cols % 4 == 0` is the real requirement.
+  LeetGPU's transpose (7000 x 6000) qualifies on both sides, so a hand-written CUDA `float4` kernel can vectorize
+  both loads and stores.
+- **Triton is stricter than the hardware.** It can't see stride values at compile time, so it specializes integer
+  arguments on one test only: **divisible by 16 (elements)**. It then knows the alignment and vectorizes; otherwise
+  it plays safe with scalar accesses. In the transpose: input stride 6000 = 16 x 375 → vectorized **loads**; output
+  stride 7000 = 16 x 437.5 → scalar **stores**, even though 7000 is divisible by 4 and `float4` would be legal.
+
+### 8.5 For the float4 transpose (TODO)
+
+4 neighbours in an input row become 4 neighbours in an output **column**, so you can't store the `float4` you
+loaded. Shared memory does the regrouping: load a `float4` from an input row into the tile; on the store side,
+gather 4 values that are consecutive **down a tile column** (consecutive along the output row) and store them as one
+`float4`. Re-check the thread count per tile and whether the +1 padding still avoids bank conflicts. Suggested
+warm-up: a `float4` copy or vector add first.
+Note for the smem tile: with `float tile[64][65]` (+1 padding) the tile **rows** are not 16-byte aligned (see
+§8.6), so read and write the smem tile with scalar accesses, or pick a padding / swizzle that keeps rows aligned.
+
+### 8.6 Making sure the base pointer is aligned
+*Added 2026-11-08*
+
+`reinterpret_cast<float4*>(p)[k]` is aligned for every `k` **only if `p` is**. You can't move `p`, so either you
+**know** it's aligned from where it came, or you **check** at run time and pick a path.
+
+**Where `p` comes from**
+
+| where `p` comes from | 16-byte aligned? |
+| --- | --- |
+| `cudaMalloc` | ✅ guaranteed: 256-byte aligned, and 256 = 16 x 16, so every multiple of 256 is a multiple of 16 (in binary: low 8 bits zero ⇒ low 4 bits zero). One big alignment covers every smaller one (4, 8, 16, 32, 128) |
+| a fresh PyTorch CUDA tensor (`torch.empty`, `randn`, ...) | ✅ the caching allocator also hands out large-aligned blocks |
+| **a pointer with an offset**: `p + 1`, a tensor slice like `x[:, 1:]`, or `x[1:]` with odd `cols` | ❌ not necessarily: the offset moves it off the 16-byte ticks. `p + n` is aligned only if `n % 4 == 0` (floats) |
+| a `__shared__` or local array you declare | ✅ if declared as `float4`, or with `__align__(16)` / `alignas(16)`. A plain `float` array is only promised **4**-byte alignment |
+
+**Check at run time** (the safe pattern for `solve`, which gets raw pointers from an unknown caller):
+
+```cpp
+#include <cstdint>   // uintptr_t
+bool aligned16(const void* p) { return reinterpret_cast<uintptr_t>(p) % 16 == 0; }
+
+if (aligned16(input) && aligned16(output) && cols % 4 == 0 && rows % 4 == 0)
+    transpose_float4<<<...>>>(...);   // fast path
+else
+    transpose_scalar<<<...>>>(...);   // always works
+```
+
+`reinterpret_cast<uintptr_t>(p)` turns the pointer into its plain address number; `% 16` asks "is it on a tick?".
+Triton does the same test automatically (`arg % 16 == 0` in `triton/backends/compiler.py`). A third option for flat
+1-D kernels is **peeling**: scalar for the first 1..3 elements up to a tick, `float4` for the middle, scalar tail.
+
+**Shared memory: who picks the address.** Shared memory has its own address space per block, starting at 0. There
+is no run-time allocator: the **compiler** lays out the static `__shared__` arrays at fixed offsets, honouring each
+type's alignment and inserting padding where needed. Measured on the A100 (`__cvta_generic_to_shared` gives the
+offset):
+
+```cpp
+__shared__ float  a[3];                  // @ 0    (12 B)
+__shared__ float4 b[4];                  // @ 16   (12..15 padding: float4 needs a multiple of 16)
+__shared__ float  c[5];                  // @ 80
+__shared__ __align__(16) float d[8];     // @ 112  (c ends at 100; padded to 112)
+__shared__ float  tile[64][65];          // @ 144; tile[1] @ 404, tile[2] @ 664, tile[4] @ 1184
+```
+
+- **Order:** in both tests on nvcc 12.8 the arrays were placed in declaration order, each padded up to its type's
+  alignment (a second test: `float p[1]; float4 q[1]; float r[1]; float4 s[1]; double t[1]` → 0, 16, 32, 48, 64, wasting
+  12 bytes after each `float`). The CUDA docs don't promise the order, so never compute one array's address from
+  another's; only each array's own alignment is guaranteed. Grouping arrays from largest alignment to smallest avoids
+  the padding. **Unused** `__shared__` arrays are removed entirely (a 1 KB untouched array added 0 bytes: 72 bytes smem).
+- So yes: a `float4` (or `__align__(16)`) smem array starts at a multiple of 16 (0, 16, 32, ...). A plain `float` array
+  happened to land on 0 or 144 here, but only 4-byte alignment is promised: declare it `float4` or `__align__(16)` if
+  you'll read it with `float4`.
+- **The array start isn't enough for a 2-D tile.** Each row of `tile[64][65]` is 65 x 4 = 260 bytes, and 260 % 16 = 4.
+  Rows 1, 2, 3 start 4, 8, 12 bytes off a tick (404, 664, ...); only every 4th row (1184) is aligned. The +1 padding
+  that avoids bank conflicts breaks `float4` access to the tile rows. A row length that is a multiple of 4 floats
+  (e.g. `[64][68]`, padding +4) keeps every row aligned, but changes the bank pattern: re-check conflicts.
+
+---
+
+## 9. Matrices in memory: 1-D storage, 2-D view
+
+*Added 2026-11-10, from debugging and timing `kernels/matrix_transpose/matrix_transpose_smem_float4.cu`
+(questions: "how is a 35 x 35 matrix laid out?", "where do `rows`/`cols` come from in the mask?", "what do the
+warps do when a tile row isn't a multiple of 32?").*
+
+### 9.1 A matrix is one flat block; `cols` is what makes it 2-D
+
+- `cudaMalloc(rows * cols * sizeof(float))` gives **one contiguous run** of floats, no gaps. Row-major: row 0,
+  then row 1 right after it. For 35 x 35: `[0][34]` is at byte 136, `[1][0]` (the 36th float) at byte 140.
+- Memory has no rows. The 2-D view exists only in **two integers** and one formula:
+  `flat = r * cols + c`. The same 1024 floats are 32 x 32, 16 x 64 or 8 x 128 depending on `cols`: `(1, 0)` is
+  flat 32, 64 or 128. Every choice runs without error; only the shape the data was **written with** gives the
+  right answer (`main` fills `input_h[i*cols + j]` with `cols = 6000`, so the kernel must use 6000 too).
+  That's why every kernel takes `rows` and `cols` as arguments: it's the only place the shape exists.
+- **Static arrays bake the stride into the type.** `__shared__ float A[32][32]` is also one flat block; the
+  compiler turns `A[r][c]` into `base + (r*32 + c) * 4`. The +1 padding (`tile[64][65]`) is just a different
+  stride (65), which is how it shifts each row by one bank.
+- **No bounds checking anywhere.** `A[0][40]` silently becomes `A[1][8]`; past the last row is off the end of the
+  array (in C++ strictly undefined behaviour). Staying inside the shape is the kernel's job.
+- Row length in bytes decides row alignment (§8.4): 35 floats = 140 B, not a multiple of 16, so rows 1, 2, ...
+  aren't 16-byte aligned. `cudaMallocPitch` pads each row to an aligned *pitch* (then index with `r * pitch`);
+  plain `cudaMalloc` (what LeetGPU uses) never pads.
+
+### 9.2 Why the bounds mask is 2-D
+
+The mask `r < rows && c < cols` checks that a coordinate **exists in the matrix** before it's turned into a flat
+index. The formula is one-to-one only inside that range. Outside it still produces a number, just the wrong one.
+Example: 35 x 35 matrix, 32 x 32 tiles, so edge tiles have threads for columns 35..63:
+
+| missing check | example | result |
+| --- | --- | --- |
+| `c < cols` | `(0, 36)` → flat 36 = `[1][1]` | **wraps into the next row**: wrong element, no error (a write corrupts real data) |
+| `r < rows` | `(40, 0)` → flat 1400 > 1224 | **past the end of the buffer**: illegal memory access, or garbage |
+
+A single `flat < rows*cols` check would only catch the second case.
+**`float4` version:** a `float4` at `(r, c)` covers `c..c+3`. `c < cols` only proves the first float exists; the
+rest can wrap into row `r+1`. If `cols % 4 == 0` (and `c` is a multiple of 4), `c < cols` implies `c + 3 < cols`,
+so the single check is enough. That's why the LeetGPU shape 7000 x 6000 needs no extra handling.
+
+### 9.3 Loading a tile: what each warp touches
+
+The usual loop (as in `matrix_transpose_smem.cu`) walks a **tile-local** index `i` and splits it:
+
+```cpp
+for (int i = lin_tid; i < BM*BK; i += num_threads) {
+    int row = i / BK, col = i % BK;                            // tile coordinate
+    int r = block_start_row + row, c = block_start_col + col;  // matrix coordinate
+    if (r < rows && c < cols) tile[row][col] = input[r*cols + c];
+}
+```
+
+- **`col = i % BK < BK`** keeps a thread out of the neighbouring tile on the right; **the loop bound
+  `i < BM*BK`** keeps `row < BM` (the first float4 bug mixed units here and ran off the bottom of the tile).
+  `blockIdx` (via `block_start_*`) says *which* tile; `i` only ever covers this one.
+- **A tile is not contiguous in DRAM** (only its smem copy is). Tile rows are `cols` floats apart in the matrix.
+- Consecutive `i` = consecutive floats **within a tile row**. When a warp's 32 lanes cross the end of a tile row,
+  `i % BK` wraps them to the next tile row and the address **jumps**. From `(row, BK-1)` to `(row+1, 0)`:
+  `+cols` down one row, `-(BK-1)` back to column 0, so the jump is **`cols - (BK-1)` floats** (BK = 35,
+  cols = 6000: 5,966 floats). It depends on `cols`, not on `blockIdx` (the tile position cancels out).
+- **Tile width a multiple of 32** (e.g. BK = 64): warps tile each row exactly and never straddle a row end.
+  Jumps happen only **between** warps, which costs nothing: each warp issues its own request and gets its own
+  sectors anyway. What matters is the 32 addresses *inside* a warp (see
+  [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md) takeaway 6).
+- **Tile width not a multiple of 32** (e.g. BK = 35): some warps make **two** contiguous runs instead of one. That
+  means more sectors and transactions: coalescing **degrades** but doesn't break (nothing like the strided naive
+  kernel). Lanes are **not** idle because of the width: `i % BK` gives every lane an element.
+- **Full efficiency also needs aligned run starts:** a 128-byte warp run starting on a 32-byte sector boundary
+  touches 4 sectors, otherwise 5. Holds for 7000 x 6000 with BK = 64 (row = 24,000 B, a multiple of 32).
+
+**Where idle threads come from:**
+
+1. **Tile area vs thread count**, on the **last pass** of the loop: if `BM*BK % num_threads != 0`, the last pass
+   has fewer elements than threads. 35 x 35 = 1225 with 256 threads: 4 full passes (1,024) + a 5th with
+   **201 active, 55 idle**. 64 x 64 = 4096 with 256 threads divides evenly: none.
+2. **Tiles at the matrix edge** (not at every tile boundary: where two interior tiles meet, every thread works).
+   The `if` turns off lanes whose `(r, c)` is outside the matrix. The hardware masks those lanes; the warp doesn't
+   "know" anything, each thread evaluates its own condition. 7000 x 6000 with 64 x 64 tiles:
+   - **right edge:** 6000 = 93 x 64 + **48** → in every tile row, warp 1 (cols 32..63) has 16 active, 16 idle
+     lanes (**part of a warp**);
+   - **bottom edge:** 7000 = 109 x 64 + **24** → tile rows 24..63 don't exist, so their warps are **entirely idle**;
+   - **corner tile:** both.
+
+**Summary**
+
+| | coalescing within a warp | idle threads |
+| --- | --- | --- |
+| tile width a multiple of 32 | one contiguous run per warp | none (if `BM*BK % threads == 0`) |
+| tile width not a multiple of 32 | some warps split into 2 runs (more sectors) | only on the last pass, if `BM*BK % threads != 0` |
+| tiles at the matrix edge | same as above | lanes whose `(abs_row, abs_col)` is outside the matrix |
