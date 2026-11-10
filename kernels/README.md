@@ -13,7 +13,7 @@ it taught about the GPU.
 | [`matrix_add`](matrix_add/) | [LeetGPU](https://leetgpu.com/challenges/matrix-addition) | done | done | todo | merged |
 | [`matmul`](matmul/) | [LeetGPU](https://leetgpu.com/challenges/matrix-multiplication) | naive done; 2D blocktiling in progress | written, not in repo yet | todo | `17-matmul-triton-vs-cuda-cpp-vs-torch` |
 | `conv1d` | [LeetGPU](https://leetgpu.com/challenges/1d-convolution) | written, not in repo yet | written, not in repo yet | todo | `20-1d-convolution-triton-vs-cuda-cpp-vs-torch` |
-| `matrix_transpose` | [LeetGPU](https://leetgpu.com/challenges/matrix-transpose) | todo | written, not in repo yet | todo | `21-matrix-transpose-triton-vs-cuda-cpp-vs-torch` |
+| [`matrix_transpose`](matrix_transpose/) | [LeetGPU](https://leetgpu.com/challenges/matrix-transpose) | naive, smem, smem float4: done, timed | done, autotuned, timed | timed (in the Triton script) | merged |
 | `color_inversion` | [LeetGPU](https://leetgpu.com/challenges/color-inversion) | todo | written, not in repo yet | todo | `22-color-inversion-triton-vs-cuda-cpp-vs-torch` |
 
 Each operator is developed on its own branch and merged to `master` through a PR. Changes that
