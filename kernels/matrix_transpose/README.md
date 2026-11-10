@@ -16,6 +16,7 @@ layout conversion in Triton).
 | --- | --- | --- |
 | `matrix_transpose_naive.cu` | CUDA C++, no shared memory: 64 x 64 tile per block, 16 x 16 threads, each thread copies a 4 x 4 patch directly from input to output. Neighbouring threads in a warp are 4 columns apart, so reads are strided (16 B apart) and writes are strided by `rows`: neither is coalesced. | done |
 | `matrix_transpose_smem.cu` | CUDA C++, 64 x 64 tile staged in shared memory (padded +1 column against bank conflicts), 16 x 16 threads, each thread handles 4 x 4 elements; both reads and writes coalesced. | done |
+| `matrix_transpose_smem_float4.cu` | Same as `matrix_transpose_smem.cu`, but phase 1 loads the tile with `float4` (16-byte) global loads (`LDG.E.128`), 4 per thread per tile instead of 16 scalar ones. Shared-memory writes and the global stores stay scalar. Needs `cols % 4 == 0` (not checked). TODO: `float4` stores. | done (loads only) |
 | `matrix_transpose_triton.py` | 2-D grid of BLOCK_M x BLOCK_K tiles: load a tile with input strides, `tl.trans` it, store it with output strides. Masks handle edge tiles. `solve()`: fixed config (64 x 64, 4 warps by default). `solve_autotuned()`: the same kernel under `triton.autotune`. Times both, torch and a copy with `do_bench`. | done |
 | torch baseline (in `matrix_transpose_triton.py`) | `output.copy_(input.transpose(0, 1))`, timed with `do_bench` in the Triton script; no separate torch file. | done |
 
@@ -44,6 +45,7 @@ Bytes moved = 2 x rows x cols x 4 B (each element read once, written once).
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `matrix_transpose_naive.cu` @ `3509c11` | first timed version; global to global, no shared memory | 64 x 64 tile, 16 x 16 threads, 4 x 4 per thread | 7000 x 6000 | 0.9468 | 355 | 17.4% | 21.3% | 52.6% |
 | `matrix_transpose_smem.cu` @ `106aff6` | first timed version; `cudaDeviceSynchronize()` moved out of `solve` so it isn't timed | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2340 | 1,436 | 70.4% | 86.2% | 212.6% |
+| `matrix_transpose_smem_float4.cu` @ `COMMIT` | `float4` global loads; stores still scalar | 64 x 64 tile, 16 x 16 threads | 7000 x 6000 | 0.2318 | 1,449 | 71.1% | 86.9% | 214.7% |
 | `matrix_transpose_triton.py` @ `6fed2da` | fixed config, same tile and thread count as the smem kernel | 64 x 64 tile, 8 warps (256 threads) | 7000 x 6000 | 0.2253 | 1,491 | 73.1% | 90.2% | 220.9% |
 | `matrix_transpose_triton.py` @ `6fed2da` | autotuned (60 configs: tiles 16..128 per side, 1..16 warps, 4..64 elements per thread) | best: 32 x 128 tile, 16 warps | 7000 x 6000 | 0.2109 | 1,593 | 78.1% | 96.3% | 235.9% |
 | torch `output.copy_(input.transpose(0, 1))` | baseline | - | 7000 x 6000 | 0.4976 | 675 | 33.1% | 40.8% | 100% |
@@ -54,6 +56,7 @@ Bytes moved = 2 x rows x cols x 4 B (each element read once, written once).
   `do_bench` (1,653 GB/s, L2 flushed). At 336 MB moved the difference is under 1%.
 - The Triton kernel beats the smem CUDA C++ kernel at the same 64 x 64 tile and 256 threads (73.1%
   vs 70.4%), and the autotuned rectangular 32 x 128 tile gets within 4% of the copy.
+- `float4` loads alone gain only ~1% over the scalar smem kernel (0.2318 vs 0.2340 ms); see below.
 - torch's `copy_` of a transposed view is far slower than any tiled kernel here (33% of spec).
 
 ### Why the D2D copy isn't an apples-to-apples target
@@ -70,7 +73,24 @@ ceiling for these kernels:
   more even when both reads and writes are coalesced.
 
 So "% of D2D copy" is a useful reference, but 100% isn't reachable with 4-byte accesses. Closing
-the gap means wider (`float4`) loads and stores, which would be a new variant.
+the gap means wider (`float4`) loads and stores.
+
+### Why `float4` loads alone barely help
+
+`matrix_transpose_smem_float4.cu` vectorizes only the loads, and gains ~1% (70.4% to 71.1% of spec):
+
+- **Only half the traffic changed.** The kernel reads 168 MB and writes 168 MB. The writes are still
+  one 4-byte `float` per thread per access (`STG.E`), so half the bytes see no benefit.
+- **The scalar loads were already coalesced.** A warp of 4-byte loads already fetches full 32-byte
+  sectors with nothing wasted. `float4` moves the same bytes with 4x fewer load instructions and
+  more bytes in flight per instruction, but DRAM traffic doesn't drop.
+- **The tile staging is unchanged.** Each tile still goes through shared memory one `float` at a time
+  (the +1 padding makes the smem rows 260 B, not 16-byte aligned) and a `__syncthreads()`. This
+  probably also limits how much the wider loads can help (not measured: `ncu` is blocked on this pod).
+
+The next step is `float4` stores: gather 4 values down a tile column (consecutive in the output
+row) and write them with one 16-byte store. The output row length `rows` = 7000 is a multiple of 4,
+so this is legal for the benchmark shape.
 
 ## Open issues
 
