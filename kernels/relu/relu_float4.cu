@@ -1,13 +1,10 @@
 
 /*
-For vectorlozed loads/stoeres in this problem, the BLOCK_SIZE and N should be a multiple of 4, else we need to do tail handling
+For vectorlozed loads/stores in this problem, the BLOCK_SIZE and N should be a multiple of 4, else we need to do tail handling
 
-KNOWN ISSUE (remove this note once fixed): the loop counts floats (i < BLOCK_SIZE), but each
-iteration handles a float4 (idx4 = tid_global/4). So 4 consecutive iterations map to the same
-float4, and every float4 is loaded and stored 4 times (25M float4 accesses instead of 6.25M).
-DRAM traffic is unchanged, so it still runs at copy speed. Fix: loop in float4 units
-(i < BLOCK_SIZE/4) with the start index and bounds check in float4 units, plus a scalar tail
-for N % 4 != 0.
+KNOWN ISSUE (remove this note once fixed): N % 4 != 0 is not handled yet. The kernel covers
+the N/4 full float4s only, so the last N % 4 floats (at most 3, starting at index (N/4)*4)
+are never written. Fix: a scalar tail for those floats.
 */
 
 #include <cuda_runtime.h>
@@ -25,16 +22,16 @@ __global__ void relu_kernel(const float* input, float* output, int N)
 
 
     int tid_local = threadIdx.x;
-    int block_start_idx = blockIdx.x * BLOCK_SIZE;
+    int block_start_idx = blockIdx.x * (BLOCK_SIZE / 4);
 
     
-    for (int i = tid_local; i < BLOCK_SIZE; i += blockDim.x)
+    for (int i = tid_local; i < BLOCK_SIZE/4; i += blockDim.x)
     {
-        int tid_global = block_start_idx + i;
-        if (tid_global < N) // Need to handle tails when N or BLOCK_SIZE is not a multiple of 4
+        int tidx4_global = block_start_idx + i;
+        if (tidx4_global < N/4) // Need to handle tails when N or BLOCK_SIZE is not a multiple of 4
         {   
-            const int idx4 = tid_global/4;
-            const float4 vals4_input = input4[idx4];
+            
+            const float4 vals4_input = input4[tidx4_global];
             float4 vals4_output;
             // Will this cause warp divergence?
             if (vals4_input.x < 0) vals4_output.x = 0.0f;
@@ -46,7 +43,7 @@ __global__ void relu_kernel(const float* input, float* output, int N)
             if (vals4_input.w < 0) vals4_output.w = 0.0f;
             else vals4_output.w = vals4_input.w;
 
-            output4[idx4] = vals4_output;
+            output4[tidx4_global] = vals4_output;
         }
         
     }
