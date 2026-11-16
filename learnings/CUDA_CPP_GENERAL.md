@@ -2,7 +2,7 @@
 
 Lessons that apply across problems: compiling, shared memory, barriers, floating point, launch
 configuration, debugging, memory spaces, vectorized (`float4`) access and alignment, matrices as 1-D
-storage with a 2-D view (masks, warps loading a tile). Lessons specific to one problem live next to its code, in
+storage with a 2-D view (masks, warps loading a tile), branches vs predication (warp divergence). Lessons specific to one problem live next to its code, in
 `kernels/<op>/LEARNINGS_CUDA_CPP.md`. Triton counterpart: [`TRITON_GENERAL.md`](TRITON_GENERAL.md). Bank conflicts and coalescing:
 [`MEMORY_ACCESS_GENERAL.md`](MEMORY_ACCESS_GENERAL.md).
 
@@ -378,7 +378,7 @@ This is **SPMD** (single program, multiple data). Triton is the same one level u
   across blocks inside a kernel; `__syncthreads()` is per block.
 - **Warps execute each instruction together.** If threads of one warp take different sides of an
   `if`, the warp runs both sides one after the other (**divergence**). Harmless for a debug print;
-  costly in hot loops.
+  costly in hot loops. Not every `if` is a branch, though: see §10.
 
 **CUDA vs Triton, same model one level apart** *(added 2026-10-27)*:
 
@@ -858,3 +858,66 @@ for (int i = lin_tid; i < BM*BK; i += num_threads) {
 | tile width a multiple of 32 | one contiguous run per warp | none (if `BM*BK % threads == 0`) |
 | tile width not a multiple of 32 | some warps split into 2 runs (more sectors) | only on the last pass, if `BM*BK % threads != 0` |
 | tiles at the matrix edge | same as above | lanes whose `(abs_row, abs_col)` is outside the matrix |
+
+---
+
+## 10. Branches, predication and warp divergence
+
+*(added 2026-11-16, from `kernels/relu/relu_naive.cu` and `relu_float4.cu`, SASS read on an RTX 4090)*
+
+### 10.1 What warp divergence is
+
+The 32 threads of a warp execute one instruction at a time, together. If some lanes take the `if`
+side and others the `else` side, the warp runs **both** sides one after the other, with the lanes
+that don't belong to each side switched off. That is divergence. It costs time only when both sides
+are long **and** it happens in many warps.
+
+### 10.2 A short `if` is usually not a branch: predication
+
+For a short `if`/`else` (or `?:`), the compiler doesn't emit a jump. It computes a per-lane
+true/false flag (a predicate register `P0`..`P6`) and uses it to pick the result or switch an
+instruction off. Every lane runs the same instructions, so there is nothing to diverge.
+
+ReLU's `x < 0 ? 0.0f : x` in the float4 kernel becomes a compare and a select:
+
+```
+FSETP.GEU.AND P0, PT, R8, RZ, PT   // P0 = (x >= 0), per lane
+FSEL R8, R8, RZ, P0                // R8 = P0 ? x : 0   (a select, no jump)
+STG.E.128 [R6.64], R8
+```
+
+The naive kernel's `if (x < 0) out = 0; else out = x;` keeps both stores, each guarded by the flag:
+
+```
+@P1  STG.E [R4.64], R3    // lanes with x >= 0 store x
+@!P1 STG.E [R4.64], RZ    // the other lanes store 0
+```
+
+Every lane steps through both instructions; each is switched off in the lanes it doesn't apply to.
+No jump, no divergence. The `if`/`else` form and the `?:` form compile to the same kind of code, so
+pick whichever reads better.
+
+### 10.3 Bounds and tail checks are real branches, but almost never divergent
+
+`if (tid_global < N)`, `if (tidx4_global < N/4)` and `else if (tidx4_global == N/4)` compile to
+real jumps (`@P0 BRA ...`), since their bodies contain loads and stores. But all 32 lanes of a warp
+agree on the answer, except in the **one warp that contains the end of the array**. ReLU at
+N = 25M: 781,250 warps (naive) or 195,313 warps (float4), and at most 1 diverges. In the float4
+kernel that is also the warp where a single lane writes the 1-3 tail floats while the other 31 wait.
+
+Divergence hurts when the condition depends on the lane in a way that splits *every* warp, e.g.
+`if (tid % 2)` inside a hot loop, with long bodies on both sides. A condition on `tid / 32` (the warp
+ID) never splits a warp.
+
+### 10.4 In a memory-bound kernel it wouldn't show anyway
+
+Both ReLU kernels run at ~91% of the 1,008 GB/s spec, the same as a D2D copy. The time is spent
+waiting on DRAM; a few extra instructions per warp fit inside that wait.
+
+### 10.5 Side note: what the compiler did with the float4 tail loop
+
+In `relu_float4.cu` the compiler checks `N % 4 > 0` once at the start and jumps to one of two copies
+of the main loop, so with N % 4 == 0 the tail check costs nothing. In the other copy it unrolled
+`for (j = 0; j < N % 4; j++)` into blocks of 16, 8 and 4 iterations, because it doesn't know
+`N % 4` is at most 3. Bigger code, not slower code. To check a question like this, read the SASS
+(§5.2): `cuobjdump -sass <binary>`, then look for `BRA` (jumps) vs `FSEL` / `@P` (predication).

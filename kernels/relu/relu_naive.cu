@@ -17,7 +17,6 @@ __global__ void relu_kernel(const float* input, float* output, int N)
         int tid_global = block_start_idx + i;
         if (tid_global < N)
         {
-            // Will this cause warp divergence?
             if (input[tid_global] < 0) output[tid_global] = 0.0f;
             else output[tid_global] = input[tid_global];
         }

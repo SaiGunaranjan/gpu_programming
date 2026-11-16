@@ -29,15 +29,10 @@ __global__ void relu_kernel(const float* input, float* output, int N)
             
             const float4 vals4_input = input4[tidx4_global];
             float4 vals4_output;
-            // Will this cause warp divergence?
-            if (vals4_input.x < 0) vals4_output.x = 0.0f;
-            else vals4_output.x = vals4_input.x;
-            if (vals4_input.y < 0) vals4_output.y = 0.0f;
-            else vals4_output.y = vals4_input.y;
-            if (vals4_input.z < 0) vals4_output.z = 0.0f;
-            else vals4_output.z = vals4_input.z;
-            if (vals4_input.w < 0) vals4_output.w = 0.0f;
-            else vals4_output.w = vals4_input.w;
+            vals4_output.x = vals4_input.x < 0 ? 0.0f : vals4_input.x;
+            vals4_output.y = vals4_input.y < 0 ? 0.0f : vals4_input.y;
+            vals4_output.z = vals4_input.z < 0 ? 0.0f : vals4_input.z;
+            vals4_output.w = vals4_input.w < 0 ? 0.0f : vals4_input.w;
 
             output4[tidx4_global] = vals4_output;
         }
