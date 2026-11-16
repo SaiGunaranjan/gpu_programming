@@ -1,11 +1,6 @@
 
 /*
 For vectorlozed loads/stores in this problem, the BLOCK_SIZE and N should be a multiple of 4, else we need to do tail handling
-
-NOTE (remove once simplified): the N % 4 != 0 tail works, but the way it picks the thread is
-more complicated than needed. It depends on the grid layout: last block (gridDim.x - 1),
-N % BLOCK_SIZE, N % 4 != 0 and i == tid. Simpler: the thread whose global float4 index
-equals N/4 writes floats (N/4)*4 .. N-1, as an "else if" of the tidx4_global < N/4 check.
 */
 
 #include <cuda_runtime.h>
@@ -47,14 +42,11 @@ __global__ void relu_kernel(const float* input, float* output, int N)
             output4[tidx4_global] = vals4_output;
         }
 
-        int tid = (N % BLOCK_SIZE) / 4;
-        if ((blockIdx.x == gridDim.x - 1) && (N % 4 != 0) && (i == tid))
+        else if (tidx4_global == N/4)
         {
-            int tail_elements = (N % BLOCK_SIZE) % 4;
-            for (int j = 0; j < tail_elements; j++)
-            {   
-                int idx_global = (blockIdx.x * BLOCK_SIZE) + (tid*4 + j);
-                output[idx_global] = (input[idx_global] < 0) ? 0.0f : input[idx_global];
+            for (int j = 0; j < N % 4; j++)
+            {
+                output[4*tidx4_global + j] = input[4*tidx4_global + j] < 0 ? 0.0f : input[4*tidx4_global + j];
             }
         }
         
@@ -82,7 +74,7 @@ extern "C" void solve(const float* input, float* output, int N)
 int main()
 {
 
-    int N = 25'000'003; // 25'000'000;
+    int N = 25'000'003; // 25'000'000 is the leetgpu performance number;
     size_t bytes = N * sizeof(float);
 
     random_device rd;
