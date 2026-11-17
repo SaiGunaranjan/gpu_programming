@@ -15,6 +15,7 @@ it taught about the GPU.
 | `conv1d` | [LeetGPU](https://leetgpu.com/challenges/1d-convolution) | written, not in repo yet | written, not in repo yet | todo | `20-1d-convolution-triton-vs-cuda-cpp-vs-torch` |
 | [`matrix_transpose`](matrix_transpose/) | [LeetGPU](https://leetgpu.com/challenges/matrix-transpose) | naive, smem, smem float4: done, timed | done, autotuned, timed | timed (in the Triton script) | merged |
 | `color_inversion` | [LeetGPU](https://leetgpu.com/challenges/color-inversion) | todo | written, not in repo yet | todo | `22-color-inversion-triton-vs-cuda-cpp-vs-torch` |
+| [`reduction`](reduction/) | [LeetGPU](https://leetgpu.com/challenges/reduction) | todo | done (multi-pass `tl.sum`), not optimal yet | todo | `29-reduction-triton-vs-cuda-cpp-vs-torch` |
 
 Each operator is developed on its own branch and merged to `master` through a PR. Changes that
 affect every operator (this file, `.gitignore`, [`../learnings/`](../learnings/)) go to `master`
