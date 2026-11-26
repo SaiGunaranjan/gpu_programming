@@ -4,6 +4,52 @@
 using namespace std;
 #include <cstdio>
 #include <random>
+#include <algorithm>
+
+
+struct Timing {
+    float median_ms;
+    float min_ms;
+    float mean_ms;
+};
+
+// Times fn() on the GPU with cudaEvents.
+// - `warmup` untimed calls first (JIT, clocks, caches), then `reps` timed calls.
+// - One event between consecutive calls gives a per-call time for each rep -> median and min.
+// - mean = (first event to last event) / reps.
+// Note: this times everything fn() does, including any host-side cudaDeviceSynchronize() inside it.
+template <typename F>
+Timing time_gpu(F fn, int warmup, int reps)
+{
+    for (int i = 0; i < warmup; i++) fn();
+    cudaDeviceSynchronize();
+
+    vector<cudaEvent_t> ev(reps+1);
+    for (auto& e: ev) cudaEventCreate(&e);
+
+    cudaEventRecord(ev[0]);
+    for (int r = 0; r < reps; r++)
+    {
+        fn();
+        cudaEventRecord(ev[r+1]);
+    }
+
+    cudaEventSynchronize(ev[reps]);
+
+    vector<float> ms(reps);
+    for (int r = 0; r < reps; r++) cudaEventElapsedTime(&ms[r], ev[r], ev[r+1]);
+
+    float total = 0.0f;
+    cudaEventElapsedTime(&total, ev[0], ev[reps]);
+
+    for (auto& e: ev) cudaEventDestroy(e);
+
+    sort(ms.begin(), ms.end());
+    return {ms[reps / 2], ms[0], total/reps};
+}
+
+// Bytes moved / seconds, in GB/s (decimal GB, like NVIDIA's spec sheets).
+double gb_per_s(double bytes, float ms) { return bytes / (ms * 1e-3) / 1e9; }
 
 template <int BLOCK_SIZE>
 __global__ void relu_kernel(const float* input, float* output, int N)
@@ -107,6 +153,37 @@ int main()
     }
     if (mismatches == 0) printf("ReLU correct\n");
     else                 printf("ReLU incorrect: %lld of %lld elements differ\n", mismatches, (long long)N);
+
+    // --- Timing ---
+    const int warmup = 20, reps = 100;
+
+    // Practical peak: device-to-device copy. Reads `bytes`, writes `bytes`.
+    Timing copy = time_gpu([&] { cudaMemcpy(output_d, input_d, bytes, cudaMemcpyDeviceToDevice);},
+                    warmup, reps);
+
+    // Reads input, writes output: the same bytes as the copy
+    Timing kern = time_gpu([&] {solve(input_d, output_d, N);}, warmup, reps);
+
+    // Check for errors from the timed launches too (120 more kernel launches)
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+        printf("CUDA Error: %s\n", cudaGetErrorString(err));
+    }
+
+    double copy_bytes = 2.0 * bytes, kern_bytes = 2.0 * bytes;
+    double peak_spec = 1008; // RTX 4090: 10501 MHz x 2 (GDDR6X) x 48 B bus. Update when the pod's GPU changes
+    double copy_bw = gb_per_s(copy_bytes, copy.median_ms);
+    double kern_bw = gb_per_s(kern_bytes, kern.median_ms);
+
+    printf("\nN = %d, warm-up %d, reps %d (times per call: median / min / mean)\n", N, warmup, reps);
+    printf("D2D copy  : %8.1f / %8.1f / %8.1f us  %6.1f GB/s  (%5.1f%% of spec %.0f)\n",
+           copy.median_ms * 1e3, copy.min_ms * 1e3, copy.mean_ms * 1e3, copy_bw,
+           100 * copy_bw / peak_spec, peak_spec);
+    printf("reluNaive : %8.1f / %8.1f / %8.1f us  %6.1f GB/s  (%5.1f%% of spec, %5.1f%% of D2D copy)\n",
+           kern.median_ms * 1e3, kern.min_ms * 1e3, kern.mean_ms * 1e3, kern_bw,
+           100 * kern_bw / peak_spec, 100 * kern_bw / copy_bw);
+
 
 
 
