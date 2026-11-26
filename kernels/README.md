@@ -11,12 +11,12 @@ it taught about the GPU.
 | --- | --- | --- | --- | --- | --- |
 | [`vector_add`](vector_add/) | [LeetGPU](https://leetgpu.com/challenges/vector-addition) | done, timed | done, autotuned, timed | timed | merged |
 | [`matrix_add`](matrix_add/) | [LeetGPU](https://leetgpu.com/challenges/matrix-addition) | done | done | todo | merged |
-| [`relu`](relu/) | [LeetGPU](https://leetgpu.com/challenges/relu) | naive, float4: done, timed | done, autotuned, timed | timed (in the Triton script) | `28-relu-triton-vs-cuda-cpp-vs-torch` |
+| [`relu`](relu/) | [LeetGPU](https://leetgpu.com/challenges/relu) | naive, float4: done, timed | done, autotuned, timed | timed (in the Triton script) | merged |
 | [`matmul`](matmul/) | [LeetGPU](https://leetgpu.com/challenges/matrix-multiplication) | naive done; 2D blocktiling in progress | written, not in repo yet | todo | `17-matmul-triton-vs-cuda-cpp-vs-torch` |
 | `conv1d` | [LeetGPU](https://leetgpu.com/challenges/1d-convolution) | written, not in repo yet | written, not in repo yet | todo | `20-1d-convolution-triton-vs-cuda-cpp-vs-torch` |
 | [`matrix_transpose`](matrix_transpose/) | [LeetGPU](https://leetgpu.com/challenges/matrix-transpose) | naive, smem, smem float4: done, timed | done, autotuned, timed | timed (in the Triton script) | merged |
 | `color_inversion` | [LeetGPU](https://leetgpu.com/challenges/color-inversion) | todo | written, not in repo yet | todo | `22-color-inversion-triton-vs-cuda-cpp-vs-torch` |
-| [`reduction`](reduction/) | [LeetGPU](https://leetgpu.com/challenges/reduction) | todo | done (multi-pass `tl.sum`), not optimal yet | todo | `29-reduction-triton-vs-cuda-cpp-vs-torch` |
+| [`reduction`](reduction/) | [LeetGPU](https://leetgpu.com/challenges/reduction) | smem tree, smem atomic: done, timed; warp shuffle, grid-stride: todo | done (multi-pass `tl.sum`), timed, not optimal yet | timed (in the Triton script) | `29-reduction-triton-vs-cuda-cpp-vs-torch` |
 
 Each operator is developed on its own branch and merged to `master` through a PR. Changes that
 affect every operator (this file, `.gitignore`, [`../learnings/`](../learnings/)) go to `master`
