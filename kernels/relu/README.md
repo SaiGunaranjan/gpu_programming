@@ -43,10 +43,10 @@ was run 3 times and the runs agreed to within 1 us.
 
 | Variant (file @ commit) | Change | Launch config | N | Time (ms) | GB/s | % of spec | % of D2D copy | % of torch |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `relu_naive.cu` @ `TIMING_COMMIT` | first timed version | 1024 floats/block, 256 threads | 25,000,000 | 0.2212 | 904 | 89.7% | 100.5% | 101.4% |
-| `relu_float4.cu` @ `TIMING_COMMIT` | first timed version; `float4` loads/stores + scalar tail | 1024 floats/block, 256 threads, 1 `float4` per thread | 25,000,003 | 0.2202 | 908 | 90.1% | 100.9% | 101.9% |
-| `relu_triton.py` @ `TIMING_COMMIT` | fixed config | BLOCK_SIZE 1024, 4 warps | 25,000,000 | 0.2253 | 888 | 88.1% | 99.5% | 99.6% |
-| `relu_triton.py` @ `TIMING_COMMIT` | autotuned (40 configs) | best: BLOCK_SIZE 128, 4 warps (one run picked 256 / 8 warps, same time) | 25,000,000 | 0.2202 | 908 | 90.1% | 101.9% | 101.9% |
+| `relu_naive.cu` @ `24c58bc` | first timed version | 1024 floats/block, 256 threads | 25,000,000 | 0.2212 | 904 | 89.7% | 100.5% | 101.4% |
+| `relu_float4.cu` @ `24c58bc` | first timed version; `float4` loads/stores + scalar tail | 1024 floats/block, 256 threads, 1 `float4` per thread | 25,000,003 | 0.2202 | 908 | 90.1% | 100.9% | 101.9% |
+| `relu_triton.py` @ `24c58bc` | fixed config | BLOCK_SIZE 1024, 4 warps | 25,000,000 | 0.2253 | 888 | 88.1% | 99.5% | 99.6% |
+| `relu_triton.py` @ `24c58bc` | autotuned (40 configs) | best: BLOCK_SIZE 128, 4 warps (one run picked 256 / 8 warps, same time) | 25,000,000 | 0.2202 | 908 | 90.1% | 101.9% | 101.9% |
 | torch `clamp(min=0, out=)` | baseline | - | 25,000,000 | 0.2243 | 892 | 88.5% | 100.0% | 100% |
 
 - **% of torch** = torch time / variant time (above 100% = faster than torch).
