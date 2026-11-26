@@ -232,3 +232,20 @@ Vector add at 25M (details: [`kernels/vector_add/README.md`](../kernels/vector_a
 - **Nsight Systems (`nsys`)**: a timeline of launches, copies and gaps. Not installed on the pod.
   Its tracing does not need the restricted counters.
 - Until then, timing (§4-§8) plus the arithmetic (§1, §2, §7) is enough to classify a kernel.
+
+## 11. Builds and tools that distort timing
+*(added 2026-11-26, from timing `kernels/reduction/reduction_smem_tree.cu` under `compute-sanitizer`)*
+
+- **Never time under `compute-sanitizer`.** It instruments every load and store in **your kernels**
+  to check them, which slows them by roughly 10-100x. The tree reduction went from 0.42 ms to 22 ms
+  (1.8% of spec). A D2D `cudaMemcpy` in the same run still looked normal (915 GB/s): it runs on the
+  GPU's copy hardware, not as a kernel you wrote, so the sanitizer doesn't slow it down. Use the
+  sanitizer for correctness (read the `ERROR SUMMARY`, ignore the timings), and time a plain run.
+- **`-O3` on `nvcc` doesn't change kernel speed.** nvcc compiles two kinds of code: host code (`main`,
+  `solve`, anything that runs on the CPU), which it hands to the host compiler (gcc), and device
+  code (`__global__` kernels), which goes through NVIDIA's own pipeline (C++ to PTX to SASS).
+  `-O3` is passed to gcc, so it only speeds up host code, e.g. the CPU reference loop over 100M
+  elements. Device code is fully optimized by default whether or not you pass `-O3`.
+- **What does slow kernels down: `-G`** (device debug info). It turns off device optimization, so
+  kernels run much slower. Use it only with a debugger (`cuda-gdb`). For source lines in sanitizer
+  reports, use `-lineinfo` instead, which keeps the optimizations.

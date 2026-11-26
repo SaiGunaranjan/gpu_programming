@@ -25,6 +25,12 @@ elementwise kernels, threads must combine their values (block-level tree, then a
 
 N = 4,194,304 (2^22) elements (LeetGPU's), float32: 16 MB read per call.
 
+**This size doesn't measure DRAM bandwidth.** 16 MB fits in the L2 cache (72 MB on the RTX 4090),
+so timing it back to back without flushing L2 measures L2 hits (the tree kernel shows "135% of
+spec"); with `do_bench`'s L2 flush it's too small a transfer to reach full DRAM speed. Use
+**N = 100,000,000** (400 MB) for DRAM bandwidth. Both sizes, all variants:
+[`LEARNINGS_CUDA_CPP.md`](LEARNINGS_CUDA_CPP.md) §4.
+
 ## Open issues / later
 
 - [ ] Triton: replace the multi-pass `solve()`. Every pass allocates a new tensor with

@@ -129,9 +129,32 @@ not for every element.
 - **"% of D2D copy" above 100% is normal here** (the tree reduction: 103.6% at N = 100M). A read-only
   stream is a little easier on DRAM than the copy's mix of reads and writes, so a reduction can beat
   the copy's GB/s. Compare against the spec too.
-- **Small N measures the L2 cache, not DRAM.** At LeetGPU's benchmark size, N = 4,194,304 (16 MB),
-  the input fits in the 4090's 72 MB L2. With back-to-back cudaEvent timing (warm L2) the tree
-  kernel showed "157% of spec". `do_bench` flushes L2 before every call, so the Triton script
-  doesn't show this. See
+- **LeetGPU's benchmark size measures the L2 cache, not DRAM bandwidth.** N = 4,194,304 floats is
+  only 16 MB, which fits in the RTX 4090's 72 MB L2. When the same input is timed over and over
+  without flushing L2 (our `time_gpu()` loop), every call after the first reads the input from L2,
+  so the "GB/s" is L2 bandwidth: the tree kernel shows **135% of the DRAM spec**, which DRAM can't
+  deliver. `do_bench` flushes L2 before every call, so the Triton and torch numbers at this size
+  *are* DRAM reads, but of a transfer too small to reach full speed (launch and ramp-up time
+  dominate). Either way, **the 4M number isn't the true DRAM bandwidth**: use N = 100M (400 MB, far
+  bigger than L2) for that. Whether LeetGPU's own timer flushes L2 isn't known, so its score for
+  this problem may include L2 hits. See
   [`learnings/PROFILING_GENERAL.md`](../../learnings/PROFILING_GENERAL.md) §6 (do_bench flushes L2)
-  and §8 (problem-size regimes). Use N = 100M for DRAM numbers.
+  and §8 (problem-size regimes).
+
+**All variants at both sizes** (RTX 4090, 1,008 GB/s spec; medians, 3 runs each, which agreed to
+within ~1 us; measured 2026-11-26):
+
+| variant | timer | N = 4,194,304 (16 MB) | N = 100,000,000 (400 MB) |
+|---|---|---|---|
+| `reduction_smem_tree.cu` | `time_gpu` (L2 warm) | 12.3 us, 1,365 GB/s, **135% (L2)** | 0.422 ms, 948 GB/s, **94.1%** |
+| `reduction_smem_atomic.cu` | `time_gpu` (L2 warm) | 161.8 us, 104 GB/s, 10.3% | 2.594 ms, 154 GB/s, 15.3% |
+| `reduction_triton.py` (multi-pass) | `do_bench` (L2 flushed) | 36.0-36.9 us, ~460 GB/s, ~46% | 0.488 ms, 819 GB/s, 81.2% |
+| `torch.sum` | `do_bench` (L2 flushed) | 32.8 us, 512 GB/s, 50.8% | 0.483 ms, 828 GB/s, 82.1% |
+| D2D copy (reference) | each script's own | `cudaMemcpy` ~2,980 GB/s (L2, not DRAM); `copy_` 819 GB/s | `cudaMemcpy` 915 GB/s; `copy_` 914 GB/s |
+
+- **At 100M the comparison is fair** (both timers read DRAM; L2 can't hold 400 MB), and the
+  shared-memory tree kernel beats `torch.sum` by ~13 percentage points (94.1% vs 82.1%).
+- **At 4M the CUDA and Triton/torch rows aren't comparable:** the CUDA rows read from a warm L2,
+  the others from DRAM after a flush.
+- At 100M the tree kernel failed the tolerance in 1 of 3 runs (a small sum, -6.5e5, so a small
+  `rtol x |ref|`; see §2).
