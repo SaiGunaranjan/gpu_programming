@@ -18,7 +18,8 @@ elementwise kernels, threads must combine their values (block-level tree, then a
 | `reduction_triton.py` | Multi-pass: each program sums a `BLOCK_SIZE` (1024) slice with `tl.sum` and writes one partial sum; `solve()` launches passes over the partial sums until one program is left. Correct vs a float64 `torch.sum` (rtol 1e-5) up to N = 100M. | done, not optimal (see below) |
 | `reduction_smem_tree.cu` | Each block sums 1024 elements with 128 threads: every thread accumulates into its own shared-memory slot, then a shared-memory tree reduction (sequential addressing; needs a power-of-2 thread count), then one `atomicAdd` per block into `output[0]`. | done |
 | `reduction_smem_atomic.cu` | Same block layout, but every thread `atomicAdd`s each element into one shared-memory float, then one `atomicAdd` per block into `output[0]`. Kept as the contention example (see `LEARNINGS_CUDA_CPP.md` §3). | done |
-| CUDA C++, next | Register accumulator (`LEARNINGS_CUDA_CPP.md` §1), warp shuffles (`__shfl_down_sync`), grid-stride with many elements per thread. | todo |
+| `reduction_smem_tree_warp_shuffle.cu` | `reduction_smem_tree.cu` with the last 5 tree rounds (stride 16 … 1, inside one warp) done with `__shfl_down_sync` instead of shared memory + `__syncthreads()`. First use of a shuffle: the values still go through the 128-float shared-memory array. Matches the tree version bit for bit per block; same speed (0.421 ms at N = 100M). See `LEARNINGS_CUDA_CPP.md` §5. | done, not optimal |
+| CUDA C++, next | Register accumulator (`LEARNINGS_CUDA_CPP.md` §1); register-only warp shuffle (shuffle the register sum within each warp, one shared-memory slot per warp, one more shuffle in warp 0); grid-stride with many elements per thread. | todo |
 | torch baseline | `torch.sum(input)`. | todo |
 
 ## Benchmark shape

@@ -158,3 +158,58 @@ within ~1 us; measured 2026-11-26):
   the others from DRAM after a flush.
 - At 100M the tree kernel failed the tolerance in 1 of 3 runs (a small sum, -6.5e5, so a small
   `rtol x |ref|`; see §2).
+
+---
+
+## 5. First warp shuffle: `__shfl_down_sync` for the last 5 tree rounds
+*Added 2026-11-27, from [`reduction_smem_tree_warp_shuffle.cu`](reduction_smem_tree_warp_shuffle.cu).*
+
+The tree reduction in `reduction_smem_tree.cu` runs down to stride 1 through shared memory, with a
+`__syncthreads()` after every round. Once the stride is 16 or less, all the slots still being added
+belong to warp 0 (threads 0-31), so the last 5 rounds can use a warp shuffle instead:
+
+```cpp
+while (stride > 0)   // stride = 16, 8, 4, 2, 1
+{
+    blockpartialsum_smem[tid] += __shfl_down_sync(0xffffffff, blockpartialsum_smem[tid], stride);
+    stride /= 2;
+}
+```
+
+**What `__shfl_down_sync(mask, value, delta)` does:** every lane passes in `value` and gets back the
+`value` of lane `lane + delta` of the **same warp**. The data moves from register to register,
+without going through shared memory. It works only inside one warp (32 lanes): to combine values
+from different warps you still need shared memory (or atomics).
+
+**The mask** is a 32-bit value with one bit per lane (`0xffffffff` = all 32). The lanes set in it
+must all call the same `__shfl_down_sync`, and the call waits until they have all arrived. So no
+`if (tid < stride)` around it (as the shared-memory tree has): every lane in the mask has to execute
+it. That wait covers **only the masked lanes of this warp**, never other warps, so it can't replace a
+`__syncthreads()` when data crosses warps.
+
+**Why the last 5 rounds need no `__syncthreads()`:** a barrier is needed only when a thread reads
+shared memory that a **different** thread wrote. Here each thread reads and writes only its own slot
+`smem[tid]`, and the other lane's value arrives through the shuffle, already synchronized by it.
+
+**Lanes whose source is past lane 31 get their own value back.** At stride 16, lanes 16-31 have no
+lane `+16` in the warp, so they receive their own value and double it (in the shared-memory tree,
+the `if (tid < stride)` just skips them). This is harmless: each round lane 0 reads lane `stride`,
+and lanes below `stride` always hold correct partial sums, so the doubled values never reach lane 0.
+Warps 1-3 also run the loop on their own slots; their results are never used.
+
+**Tested 2026-11-26 (RTX 4090):**
+- On a fixed seed, the result is bit-identical to `reduction_smem_tree.cu` for every single-block
+  size (N = 1 … 1025). Lane `i` adds lane `i + stride`, the same pairing as the tree, so the
+  rounding is the same.
+- Larger N differs only through the order of the per-block `atomicAdd`s.
+- `compute-sanitizer`: memcheck 0 errors, racecheck 0 hazards.
+- Same time: 0.421 ms vs 0.4211 ms at N = 100M (the kernel is DRAM-bound, and the 5 rounds were a
+  tiny part of it).
+- The occasional failure at N = 100M with values in [-1000, 1000] is the §2 tolerance limit, seen
+  with the tree version too (1 of 10 vs 2 of 10 random runs), not the shuffle.
+
+**Why this isn't the optimal pattern:** the values still live in the 128-float shared-memory array,
+and each shuffle round reads and writes it. The usual pattern keeps the per-thread sum in a register
+(§1), shuffles it within **every** warp, writes one value per warp to a small shared array
+(4 floats), does one `__syncthreads()`, and lets warp 0 shuffle those 4 values. That's the next
+variant.
