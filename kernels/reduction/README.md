@@ -59,7 +59,7 @@ Measured 2026-11-28.
 | `reduction_smem_tree.cu` @ `a7396d1` | first timed version | 1024 floats/block, 128 threads | 100,000,000 | 0.4219 | 948 | 94.1% | 103.4% | 114.6% |
 | `reduction_smem_atomic.cu` @ `a7396d1` | first timed version | 1024 floats/block, 128 threads | 100,000,000 | 2.5917 | 154 | 15.3% | 16.8% | 18.6% |
 | `reduction_smem_tree_warp_shuffle.cu` @ `4dbea0d` | last 5 tree rounds via `__shfl_down_sync` | 1024 floats/block, 128 threads | 100,000,000 | 0.4219 | 948 | 94.1% | 103.4% | 114.6% |
-| `reduction_warp_shuffle.cu` @ uncommitted | register sum + warp shuffle, one smem slot per warp | 1024 floats/block, 128 threads (4 warps) | 100,000,000 | 0.4219 | 948 | 94.1% | 103.4% | 114.6% |
+| `reduction_warp_shuffle.cu` @ `a87b553` | register sum + warp shuffle, one smem slot per warp | 1024 floats/block, 128 threads (4 warps) | 100,000,000 | 0.4219 | 948 | 94.1% | 103.4% | 114.6% |
 | `reduction_triton.py` @ `a7396d1` | multi-pass `tl.sum` | BLOCK_SIZE 1024, 4 warps (default) | 100,000,000 | 0.4879 | 820 | 81.3% | 89.7% | 99.1% |
 | torch `torch.sum` | baseline | - | 100,000,000 | 0.4833 | 828 | 82.1% | 90.6% | 100% |
 
