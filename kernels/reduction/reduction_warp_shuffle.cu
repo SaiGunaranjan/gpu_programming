@@ -89,23 +89,21 @@ __global__ void reduction_kernel(const float* input, float* output, int N)
     // Perform a final shuffle reduction using only warp 0
     if (warp_id == 0)
     {
-        int new_stride = NUM_WARPS / 2; // Since there are only NUM_WARPS number of valid entires to reduce/sum over
-        // Note: Assumes powers of 2 for NUM_WARPS!
-        
+        int new_stride = 16; // Will be using all the 32 threads but populate the remaining to 0.
+        // Note: works for any NUM_WARPS <= 32 (always true: max 1024 threads per block). Needs threadsPerBlock % 32 == 0,
+        // since the first-stage shuffle uses a full mask and every warp must have all 32 lanes.
+
         bool active = lane_id < NUM_WARPS;
-        unsigned mask = __ballot_sync(0xffffffff, active);
+        // Define a new register value 'val' which uses the smem values for the valid lanes and uses 0 for the remaining lanes. 
+        float val = active ? warp_partialsum[lane_id]: 0.0f;
 
-        if (lane_id < NUM_WARPS) // or (if active) This gaurd on the load is required because, __shfl_down_sync loop through all the 32 threads/indices of a warp, but we have only NUM_WARPS number of elements in the array and hecne we need to guard the load. The mask is to ensure NUM_WARPS number of threads are active throughout 
+        while (new_stride > 0)
         {
-            while (new_stride > 0)
-            {
-                warp_partialsum[lane_id] += __shfl_down_sync(mask, warp_partialsum[lane_id], new_stride);
-                new_stride /= 2;
-            }
-            
+            val += __shfl_down_sync(0xffffffff, val, new_stride);
+            new_stride /= 2;
         }
-
-        if (lane_id == 0) atomicAdd(output, warp_partialsum[lane_id]);
+            
+        if (lane_id == 0) atomicAdd(output, val);
         
     }
 

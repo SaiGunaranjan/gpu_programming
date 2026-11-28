@@ -250,3 +250,10 @@ reads fixes it. (`compute-sanitizer --tool racecheck`: 0 hazards after the fix.)
 **Side note: lanes outside the mask.** With `mask = 0b1111` and stride 2, lane 2 asks for lane 4's
 value, but lane 4 isn't in the mask, so the result is undefined. That's harmless here because only
 lane 0's final value is used, and lane 0 only ever reads from lanes 1 and 2.
+
+**Later cleanup (2026-11-28): no guard, full mask.** Warp 0 now loads into a register with a
+ternary, `float val = (lane_id < NUM_WARPS) ? warp_partialsum[lane_id] : 0.0f;`, and all 32 lanes
+run the shuffle loop from stride 16 with mask `0xffffffff`. The guard on the *load* is all that's
+needed: the extra lanes hold 0, which adds nothing. This removes the `if`, the `__ballot_sync`, the
+out-of-mask reads above, and the power-of-2 assumption on `NUM_WARPS` (any `NUM_WARPS` up to 32
+works). Same speed (0.422 ms at 100M), racecheck and memcheck clean.
