@@ -59,7 +59,8 @@ def print_row(name, times_ms, bw, copy_bw, peak_spec):
 
 if __name__ == '__main__':
 
-    N = 4_194_304 # Performance with N = 4_194_304, max N = 100_000_000
+    N = 100_000_000 # Performance with N = 4_194_304, max N = 100_000_000
+    torch.manual_seed(42)
     input = torch.randn(N, dtype = torch.float32, device = 'cuda')
     output_torch = torch.sum(input.double())
     output_triton = torch.full((1,), float('-inf'), device = 'cuda')

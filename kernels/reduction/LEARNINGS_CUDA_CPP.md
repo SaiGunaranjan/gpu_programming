@@ -148,6 +148,8 @@ within ~1 us; measured 2026-11-26):
 |---|---|---|---|
 | `reduction_smem_tree.cu` | `time_gpu` (L2 warm) | 12.3 us, 1,365 GB/s, **135% (L2)** | 0.422 ms, 948 GB/s, **94.1%** |
 | `reduction_smem_atomic.cu` | `time_gpu` (L2 warm) | 161.8 us, 104 GB/s, 10.3% | 2.594 ms, 154 GB/s, 15.3% |
+| `reduction_smem_tree_warp_shuffle.cu` (2026-11-28) | `time_gpu` (L2 warm) | 11.3 us, 1,490 GB/s, **148% (L2)** | 0.422 ms, 948 GB/s, **94.1%** |
+| `reduction_warp_shuffle.cu` (2026-11-28) | `time_gpu` (L2 warm) | 11.3 us, 1,490 GB/s, **148% (L2)** | 0.422 ms, 948 GB/s, **94.1%** |
 | `reduction_triton.py` (multi-pass) | `do_bench` (L2 flushed) | 36.0-36.9 us, ~460 GB/s, ~46% | 0.488 ms, 819 GB/s, 81.2% |
 | `torch.sum` | `do_bench` (L2 flushed) | 32.8 us, 512 GB/s, 50.8% | 0.483 ms, 828 GB/s, 82.1% |
 | D2D copy (reference) | each script's own | `cudaMemcpy` ~2,980 GB/s (L2, not DRAM); `copy_` 819 GB/s | `cudaMemcpy` 915 GB/s; `copy_` 914 GB/s |
@@ -156,6 +158,9 @@ within ~1 us; measured 2026-11-26):
   shared-memory tree kernel beats `torch.sum` by ~13 percentage points (94.1% vs 82.1%).
 - **At 4M the CUDA and Triton/torch rows aren't comparable:** the CUDA rows read from a warm L2,
   the others from DRAM after a flush.
+- **On 2026-11-28 at 4M, both warp-shuffle kernels, the tree kernel (11.3 us) and the `cudaMemcpy`
+  all landed on exactly 11.3 us:** a launch/timer floor, so 4M can't tell these variants apart.
+  The tree kernel's 12.3 us above is from the 2026-11-26 run.
 - At 100M the tree kernel failed the tolerance in 1 of 3 runs (a small sum, -6.5e5, so a small
   `rtol x |ref|`; see §2).
 
@@ -213,3 +218,35 @@ and each shuffle round reads and writes it. The usual pattern keeps the per-thre
 (§1), shuffles it within **every** warp, writes one value per warp to a small shared array
 (4 floats), does one `__syncthreads()`, and lets warp 0 shuffle those 4 values. That's the next
 variant.
+
+## 6. Register shuffle + per-warp partials: the hang and the race (2026-11-28, `reduction_warp_shuffle.cu`)
+
+Two bugs in the first version of the two-stage shuffle (every warp shuffles its register sum, lane 0
+writes it to `warp_partialsum[NUM_WARPS]`, warp 0 shuffles those 4 values):
+
+**1. The kernel hung: the loop counter was updated inside a lane guard.**
+
+```cuda
+while (new_stride > 0) {
+    if (lane_id < NUM_WARPS) {      // only lanes 0..3 get in here
+        ... __shfl_down_sync(mask, ...);
+        new_stride /= 2;            // lanes 4..31 never halve their copy
+    }
+}
+```
+
+`new_stride` is a local variable, so **each thread has its own copy**. Lanes 4–31 never reach the
+halving, so their loop never ends. Since Volta, lanes in a warp are scheduled independently, so they
+just spin forever, the kernel never finishes, and the host blocks in `cudaDeviceSynchronize()`.
+Fix: put the guard **around** the loop (`if (active) { while (...) {...} }`), so every thread that
+enters the loop also updates its counter. Rule: a loop's exit condition must be updated by every
+thread that runs the loop.
+
+**2. Race between the two stages: a `__syncthreads()` was missing.** Lane 0 of each of the 4 warps
+writes `warp_partialsum[warp_id]`, then warp 0 reads all 4 entries. Without a barrier, warp 0 can
+read an entry before warps 1–3 have written it. `__syncthreads()` between the writes and warp 0's
+reads fixes it. (`compute-sanitizer --tool racecheck`: 0 hazards after the fix.)
+
+**Side note: lanes outside the mask.** With `mask = 0b1111` and stride 2, lane 2 asks for lane 4's
+value, but lane 4 isn't in the mask, so the result is undefined. That's harmless here because only
+lane 0's final value is used, and lane 0 only ever reads from lanes 1 and 2.

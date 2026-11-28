@@ -145,7 +145,7 @@ int main()
     size_t output_bytes = sizeof(float);
 
     random_device rd;
-    mt19937 gen(rd());
+    mt19937 gen(42); // mt19937 gen(rd());
     uniform_real_distribution<float> dis(-1000.0f, 1000.0f);
 
     vector<float> input_h(N);
@@ -231,7 +231,7 @@ int main()
     printf("D2D copy  : %8.1f / %8.1f / %8.1f us  %6.1f GB/s  (%5.1f%% of spec %.0f)\n",
            copy.median_ms * 1e3, copy.min_ms * 1e3, copy.mean_ms * 1e3, copy_bw,
            100 * copy_bw / peak_spec, peak_spec);
-    printf("reductionSmemTree : %8.1f / %8.1f / %8.1f us  %6.1f GB/s  (%5.1f%% of spec, %5.1f%% of D2D copy)\n",
+    printf("reductionSmemTreeWarpShuffle : %8.1f / %8.1f / %8.1f us  %6.1f GB/s  (%5.1f%% of spec, %5.1f%% of D2D copy)\n",
            kern.median_ms * 1e3, kern.min_ms * 1e3, kern.mean_ms * 1e3, kern_bw,
            100 * kern_bw / peak_spec, 100 * kern_bw / copy_bw);
 

@@ -103,7 +103,7 @@ int main()
     size_t output_bytes = sizeof(float);
 
     random_device rd;
-    mt19937 gen(rd());
+    mt19937 gen(42); // mt19937 gen(rd());
     uniform_real_distribution<float> dis(-1000.0f, 1000.0f);
 
     vector<float> input_h(N);
